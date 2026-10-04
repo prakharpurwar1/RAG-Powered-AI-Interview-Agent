@@ -1,0 +1,594 @@
+"""FastAPI Application for AI Interviewer Bot.
+
+Production-grade asynchronous API with Swagger docs, WebSocket streaming,
+CORS, Pydantic validation, and SQLite persistence.
+"""
+from __future__ import annotations
+
+import base64
+import csv
+import io
+import json
+import os
+import sys
+import time
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional
+
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Header,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from pydantic import BaseModel, Field
+
+from .config import InterviewConfig
+from .engine import InterviewEngine
+from .integrity import IntegrityMonitor
+from .llm import build_llm
+from .store import Store
+from .streaming import build_streaming_asr
+from .voice import build_voice
+
+_WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
+STARTED_AT = time.time()
+SESSION_TTL = int(os.environ.get("SESSION_TTL_SECONDS", 6 * 3600))
+_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_STORE: Optional[Store] = None
+_STORE_PATH: Optional[str] = None
+_VOICE = None
+_VOICE_MOCK: Optional[bool] = None
+
+
+def get_store() -> Store:
+    global _STORE, _STORE_PATH
+    path = os.environ.get("INTERVIEW_DB", "interviews.db")
+    if _STORE is None or _STORE_PATH != path:
+        _STORE = Store(path)
+        _STORE_PATH = path
+    return _STORE
+
+
+def get_voice():
+    global _VOICE, _VOICE_MOCK
+    mock = bool(os.environ.get("VOICE_MOCK"))
+    if _VOICE is None or _VOICE_MOCK != mock:
+        _VOICE = build_voice(mock=mock)
+        _VOICE_MOCK = mock
+    return _VOICE
+
+
+def sweep_sessions():
+    now = time.time()
+    dead = [sid for sid, s in _SESSIONS.items() if now - s.get("last", now) > SESSION_TTL]
+    for sid in dead:
+        _SESSIONS.pop(sid, None)
+
+
+def check_dashboard_auth(
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+) -> bool:
+    expected = os.environ.get("DASHBOARD_TOKEN", "")
+    if not expected:
+        return True
+    given = token or ""
+    if authorization and authorization.startswith("Bearer "):
+        given = authorization[7:].strip()
+    if given != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: invalid or missing dashboard token",
+        )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Pydantic Request Models
+# ---------------------------------------------------------------------------
+class StartSessionRequest(BaseModel):
+    mode: str = "practice"
+    interview_type: str = "mixed"
+    role: str = "Software Engineer"
+    level: str = "mid"
+    candidate_name: str = "Candidate"
+    candidate_email: Optional[str] = ""
+    language: str = "en-IN"
+    max_questions: int = 6
+    mock: bool = False
+    consent: bool = False
+    randomize_order: Optional[bool] = None
+    proctoring: bool = True
+
+
+class MessageRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+class ReportRequest(BaseModel):
+    session_id: str
+
+
+class SignalRequest(BaseModel):
+    session_id: str
+    kind: str
+    detail: Optional[Any] = None
+
+
+class TranscribeRequest(BaseModel):
+    audio_b64: str
+    language: str = "en-IN"
+    filename: str = "audio.webm"
+
+
+class SpeakRequest(BaseModel):
+    text: str
+    language: str = "en-IN"
+    speaker: str = "shubh"
+
+
+class ReviewRequest(BaseModel):
+    reviewer: Optional[str] = "Reviewer"
+    notes: Optional[str] = ""
+    human_score: Optional[Any] = None
+    human_recommendation: Optional[str] = ""
+
+
+class CandidateDeleteRequest(BaseModel):
+    email: str
+
+
+# ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: sweep expired interviews
+    try:
+        purged = get_store().purge_expired()
+        if purged:
+            sys.stderr.write(f"[Startup] Purged {purged} expired interview(s)\n")
+    except Exception as e:
+        sys.stderr.write(f"[Startup Error] {e}\n")
+    yield
+    # Shutdown logic if needed
+
+
+# ---------------------------------------------------------------------------
+# FastAPI Application Definition
+# ---------------------------------------------------------------------------
+app = FastAPI(
+    title="AI Interviewer API",
+    description="Asynchronous conversational AI interviewer backend with real-time speech and scoring",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+# Enable CORS for external frontend or local dev
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Frontend Static Routes
+# ---------------------------------------------------------------------------
+@app.get("/", include_in_schema=False)
+async def serve_index():
+    index_path = os.path.join(_WEB_DIR, "index.html")
+    return FileResponse(index_path, media_type="text/html")
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def serve_dashboard(
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    dash_path = os.path.join(_WEB_DIR, "dashboard.html")
+    return FileResponse(dash_path, media_type="text/html")
+
+
+# ---------------------------------------------------------------------------
+# Core Interview API
+# ---------------------------------------------------------------------------
+@app.get("/api/capabilities", tags=["System"])
+async def get_capabilities():
+    """Returns audio, voice, and LLM capabilities of the current server."""
+    return {
+        "voice": get_voice().capabilities(),
+        "llm": build_llm().name,
+        "proctoring": True,
+    }
+
+
+@app.get("/api/health", tags=["System"])
+async def get_health():
+    """Healthcheck endpoint for monitoring uptime and active sessions."""
+    sweep_sessions()
+    return {
+        "status": "ok",
+        "uptime_s": round(time.time() - STARTED_AT, 1),
+        "sessions": len(_SESSIONS),
+        "db": get_store().path,
+    }
+
+
+@app.post("/api/start", tags=["Interview"])
+async def start_interview(req: StartSessionRequest):
+    """Initializes a new interview session."""
+    sweep_sessions()
+    data = req.model_dump()
+    allowed = InterviewConfig.__dataclass_fields__.keys()
+    cfg_args = {k: v for k, v in data.items() if k in allowed}
+    cfg = InterviewConfig(**cfg_args)
+
+    if cfg.mode == "hiring" and req.randomize_order is None:
+        cfg.randomize_order = True
+    cfg.validate()
+
+    sid = os.urandom(8).hex()
+    store = get_store()
+    iid = store.create_interview(vars(cfg), llm="")
+
+    llm = build_llm(mock=req.mock)
+    engine = InterviewEngine(cfg, llm, seed=iid)
+    monitor = IntegrityMonitor(enabled=cfg.proctoring)
+
+    _SESSIONS[sid] = {
+        "engine": engine,
+        "iid": iid,
+        "persisted": 0,
+        "monitor": monitor,
+        "created": time.time(),
+        "last": time.time(),
+        "prompt_at": time.time(),
+    }
+
+    first_message = engine.start()
+
+    # Persist opening message
+    turns = engine.turns
+    while _SESSIONS[sid]["persisted"] < len(turns):
+        idx = _SESSIONS[sid]["persisted"]
+        store.add_turn(iid, idx, vars(turns[idx]))
+        _SESSIONS[sid]["persisted"] += 1
+
+    return {
+        "session_id": sid,
+        "interview_id": iid,
+        "message": first_message,
+        "stage": engine.stage,
+        "llm": engine.llm.name,
+        "proctoring": cfg.proctoring,
+    }
+
+
+@app.post("/api/message", tags=["Interview"])
+async def send_message(req: MessageRequest):
+    """Processes candidate's response turn and returns the interviewer's next question."""
+    sweep_sessions()
+    sess = _SESSIONS.get(req.session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+
+    sess["last"] = time.time()
+    text = req.message.strip()
+
+    # Integrity velocity check
+    elapsed = time.time() - sess.get("prompt_at", time.time())
+    if elapsed < 6 and len(text.split()) > 40:
+        sess["monitor"].record("fast", detail=round(elapsed, 1))
+
+    out = sess["engine"].respond(text)
+    sess["prompt_at"] = time.time()
+
+    # Persist turns
+    store = get_store()
+    turns = sess["engine"].turns
+    while sess["persisted"] < len(turns):
+        idx = sess["persisted"]
+        store.add_turn(sess["iid"], idx, vars(turns[idx]))
+        sess["persisted"] += 1
+
+    if out.get("done"):
+        rep = sess["engine"].report()
+        store.save_scorecard(sess["iid"], rep["scorecard"])
+        integrity_summary = sess["monitor"].summary()
+        store.save_integrity(sess["iid"], integrity_summary)
+        out["interview_id"] = sess["iid"]
+
+    return out
+
+
+@app.post("/api/report", tags=["Interview"])
+async def generate_report(req: ReportRequest):
+    """Generates and finalizes the candidate scorecard and evaluation report."""
+    sess = _SESSIONS.get(req.session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+
+    rep = sess["engine"].report()
+    store = get_store()
+    store.save_scorecard(sess["iid"], rep["scorecard"])
+    integrity_summary = sess["monitor"].summary()
+    store.save_integrity(sess["iid"], integrity_summary)
+    rep["interview_id"] = sess["iid"]
+    return rep
+
+
+@app.post("/api/signal", tags=["Interview"])
+async def record_signal(req: SignalRequest):
+    """Records proctoring telemetry signals (blur, copy, paste)."""
+    sess = _SESSIONS.get(req.session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    sess["last"] = time.time()
+    sess["monitor"].record(req.kind, detail=req.detail)
+    return {"ok": True, "score": sess["monitor"].score()}
+
+
+# ---------------------------------------------------------------------------
+# Voice & Audio Endpoints
+# ---------------------------------------------------------------------------
+@app.post("/api/transcribe", tags=["Voice"])
+async def transcribe_audio(req: TranscribeRequest):
+    """Transcribes base64-encoded audio chunk to text using configured ASR."""
+    try:
+        data = base64.b64decode(req.audio_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 audio payload")
+
+    text = get_voice().transcribe(
+        data, filename=req.filename, language_code=req.language
+    )
+    return {"transcript": text}
+
+
+@app.post("/api/speak", tags=["Voice"])
+async def synthesize_speech(req: SpeakRequest):
+    """Synthesizes text into streaming audio WAV bytes."""
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    audio_bytes = get_voice().synthesize_stream(
+        text, language_code=req.language, speaker=req.speaker
+    )
+    return Response(content=audio_bytes, media_type="audio/wav")
+
+
+@app.websocket("/api/stream-asr")
+async def websocket_asr(ws: WebSocket):
+    """Real-time streaming speech-to-text WebSocket endpoint."""
+    await ws.accept()
+    asr = build_streaming_asr()
+    try:
+        asr.connect()
+        await ws.send_json({"event": "ready"})
+        while True:
+            data = await ws.receive_text()
+            msg = json.loads(data or "{}")
+            ev = msg.get("event")
+            if ev == "audio_input":
+                audio_raw = base64.b64decode(msg.get("audio", ""))
+                asr.send_audio(audio_raw)
+                try:
+                    event_data = asr.next_event()
+                    if event_data:
+                        await ws.send_json(event_data)
+                except Exception:
+                    pass
+            elif ev == "flush":
+                asr.flush()
+                try:
+                    event_data = asr.next_event()
+                    if event_data:
+                        await ws.send_json(event_data)
+                except Exception:
+                    pass
+            elif ev == "end":
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        sys.stderr.write(f"[WebSocket ASR Error] {e}\n")
+    finally:
+        try:
+            asr.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Reviewer & Dashboard Endpoints
+# ---------------------------------------------------------------------------
+@app.get("/api/stats", tags=["Dashboard"])
+async def get_dashboard_stats(
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    return get_store().stats()
+
+
+@app.get("/api/interviews", tags=["Dashboard"])
+async def list_interviews(
+    status: Optional[str] = Query(None),
+    sort: str = Query("score"),
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    return {"interviews": get_store().list_interviews(status, sort)}
+
+
+@app.get("/api/interviews/{interview_id}", tags=["Dashboard"])
+async def get_interview_detail(
+    interview_id: str,
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    detail = get_store().get_interview(interview_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    return detail
+
+
+@app.post("/api/interviews/{interview_id}/review", tags=["Dashboard"])
+async def review_interview(
+    interview_id: str,
+    req: ReviewRequest,
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    store = get_store()
+    if not store.get_interview(interview_id):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    hs = req.human_score
+    try:
+        hs_float = float(hs) if hs not in (None, "") else None
+    except Exception:
+        hs_float = None
+
+    store.save_review(
+        interview_id,
+        req.reviewer or "Reviewer",
+        req.notes or "",
+        hs_float,
+        req.human_recommendation or "",
+    )
+    return store.get_interview(interview_id)
+
+
+@app.post("/api/interviews/{interview_id}/delete", tags=["Dashboard"])
+async def delete_interview(
+    interview_id: str,
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    get_store().delete_interview(interview_id)
+    return {"deleted": interview_id}
+
+
+@app.get("/api/candidate", tags=["Compliance"])
+async def export_candidate_data(
+    email: str = Query(...),
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    return {"candidate": email, "interviews": get_store().export_candidate(email)}
+
+
+@app.post("/api/candidate/delete", tags=["Compliance"])
+async def delete_candidate_data(
+    req: CandidateDeleteRequest,
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    n = get_store().delete_candidate(req.email)
+    return {"deleted": n}
+
+
+@app.get("/api/export.csv", tags=["Export"])
+async def export_csv(
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(
+        [
+            "id",
+            "created_at",
+            "candidate",
+            "email",
+            "role",
+            "type",
+            "level",
+            "status",
+            "score",
+            "recommendation",
+            "integrity",
+            "flags",
+            "human_score",
+            "human_recommendation",
+            "review_status",
+            "reviewer",
+            "consent",
+            "consent_version",
+            "retention_until",
+        ]
+    )
+    for r in get_store().list_interviews(sort="recent"):
+        flags = r.get("flags") or ""
+        if isinstance(flags, str):
+            try:
+                flags = ";".join(f.get("label", "") for f in json.loads(flags))
+            except Exception:
+                flags = ""
+        w.writerow(
+            [
+                r.get("id"),
+                r.get("created_at"),
+                r.get("candidate_name"),
+                r.get("candidate_email"),
+                r.get("role"),
+                r.get("interview_type"),
+                r.get("level"),
+                r.get("status"),
+                r.get("weighted_total"),
+                r.get("recommendation"),
+                r.get("integrity_score"),
+                flags,
+                r.get("human_score"),
+                r.get("human_recommendation"),
+                r.get("review_status"),
+                r.get("reviewer"),
+                r.get("consent"),
+                r.get("consent_version"),
+                r.get("retention_until"),
+            ]
+        )
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=interviews.csv"},
+    )
+
+
+@app.get("/api/export.json", tags=["Export"])
+async def export_json(
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    check_dashboard_auth(token, authorization)
+    data = [
+        get_store().get_interview(r["id"])
+        for r in get_store().list_interviews(sort="recent")
+    ]
+    return JSONResponse(
+        content=data,
+        headers={"Content-Disposition": "attachment; filename=interviews.json"},
+    )

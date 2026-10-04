@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Interviewer · Reviewer Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root[data-theme="dark"] {
+    --bg-base: #090b10;
+    --bg-mesh: radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
+               radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.15) 0px, transparent 50%),
+               radial-gradient(at 50% 100%, rgba(6, 182, 212, 0.1) 0px, transparent 50%), #090b10;
+    --panel: rgba(18, 22, 34, 0.8);
+    --panel-hover: rgba(24, 29, 45, 0.9);
+    --panel-solid: #131722;
+    --panel-2: rgba(30, 36, 56, 0.65);
+    --panel-input: rgba(14, 18, 28, 0.85);
+    --line: rgba(255, 255, 255, 0.08);
+    --line-focus: rgba(99, 102, 241, 0.5);
+    --text: #f1f5f9;
+    --text-heading: #ffffff;
+    --muted: #94a3b8;
+    --muted-dark: #64748b;
+    --accent: #6366f1;
+    --accent-hover: #4f46e5;
+    --accent-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #ec4899 100%);
+    --accent-glow: rgba(99, 102, 241, 0.25);
+    --good: #10b981;
+    --good-bg: rgba(16, 185, 129, 0.12);
+    --warn: #f59e0b;
+    --warn-bg: rgba(245, 158, 11, 0.12);
+    --bad: #ef4444;
+    --bad-bg: rgba(239, 68, 68, 0.12);
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5);
+  }
+
+  :root[data-theme="light"] {
+    --bg-base: #f8fafc;
+    --bg-mesh: radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.08) 0px, transparent 50%),
+               radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.08) 0px, transparent 50%),
+               radial-gradient(at 50% 100%, rgba(6, 182, 212, 0.06) 0px, transparent 50%), #f8fafc;
+    --panel: rgba(255, 255, 255, 0.85);
+    --panel-hover: rgba(255, 255, 255, 0.95);
+    --panel-solid: #ffffff;
+    --panel-2: rgba(241, 245, 249, 0.9);
+    --panel-input: rgba(255, 255, 255, 0.95);
+    --line: rgba(0, 0, 0, 0.08);
+    --line-focus: rgba(99, 102, 241, 0.6);
+    --text: #1e293b;
+    --text-heading: #0f172a;
+    --muted: #64748b;
+    --muted-dark: #94a3b8;
+    --accent: #6366f1;
+    --accent-hover: #4f46e5;
+    --accent-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #ec4899 100%);
+    --accent-glow: rgba(99, 102, 241, 0.2);
+    --good: #059669;
+    --good-bg: rgba(5, 150, 105, 0.1);
+    --warn: #d97706;
+    --warn-bg: rgba(217, 119, 6, 0.1);
+    --bad: #dc2626;
+    --bad-bg: rgba(220, 38, 38, 0.1);
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.05);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.08);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    margin: 0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg-mesh);
+    background-attachment: fixed;
+    color: var(--text);
+    min-height: 100vh;
+    transition: background 0.3s ease, color 0.3s ease;
+  }
+
+  header {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 20px 24px 12px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-decoration: none;
+    color: inherit;
+  }
+  .logo-box {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    background: var(--accent-gradient);
+    display: grid;
+    place-items: center;
+    box-shadow: 0 4px 14px var(--accent-glow);
+  }
+  .logo-box svg { width: 22px; height: 22px; fill: white; }
+  .brand-text h1 {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-heading);
+    letter-spacing: -0.3px;
+  }
+  .brand-text p { font-size: 12px; color: var(--muted); }
+
+  .header-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .theme-toggle, .btn-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    cursor: pointer;
+    backdrop-filter: blur(12px);
+    transition: all 0.2s ease;
+  }
+  .theme-toggle:hover, .btn-link:hover {
+    background: var(--panel-hover);
+    border-color: var(--line-focus);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+  }
+
+  main {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 12px 24px 60px;
+  }
+
+  /* Stat Cards */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 18px 20px;
+    box-shadow: var(--shadow-sm);
+    transition: all 0.2s ease;
+  }
+  .stat-card:hover {
+    border-color: var(--line-focus);
+    transform: translateY(-2px);
+  }
+  .stat-icon {
+    font-size: 20px;
+    margin-bottom: 8px;
+  }
+  .stat-card .num {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--text-heading);
+    line-height: 1.1;
+  }
+  .stat-card .lbl {
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 500;
+    margin-top: 4px;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 14px 18px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+    box-shadow: var(--shadow-sm);
+  }
+  .search-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel-input);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 6px 12px;
+    min-width: 240px;
+  }
+  .search-box input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-size: 13.5px;
+    font-family: inherit;
+    width: 100%;
+  }
+  select, button {
+    font-family: inherit;
+    font-size: 13.5px;
+  }
+  select {
+    background: var(--panel-input);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 14px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+  select:focus { border-color: var(--accent); }
+  button {
+    border: 0;
+    border-radius: 10px;
+    padding: 8px 16px;
+    font-weight: 600;
+    cursor: pointer;
+    color: #fff;
+    background: var(--accent-gradient);
+    transition: all 0.2s ease;
+  }
+  button.ghost {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    color: var(--text);
+  }
+  button:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+  }
+  button.ghost:hover {
+    background: var(--panel-hover);
+    border-color: var(--line-focus);
+  }
+  .toolbar .spacer { margin-left: auto; }
+
+  /* Table */
+  .table-container {
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: var(--shadow-lg);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th, td {
+    text-align: left;
+    padding: 14px 18px;
+    font-size: 13.5px;
+    border-bottom: 1px solid var(--line);
+  }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    background: var(--panel-solid);
+  }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr {
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  tbody tr:hover {
+    background: var(--panel-hover);
+  }
+
+  .candidate-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .candidate-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 99px;
+    background: var(--accent-gradient);
+    color: white;
+    font-weight: 700;
+    font-size: 11px;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+  }
+
+  .pill {
+    padding: 4px 10px;
+    border-radius: 99px;
+    font-size: 12px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .pill.good { background: var(--good-bg); color: var(--good); border: 1px solid rgba(16, 185, 129, 0.2); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); border: 1px solid rgba(245, 158, 11, 0.2); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); border: 1px solid rgba(239, 68, 68, 0.2); }
+  .pill.mute { background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+
+  .empty-state {
+    color: var(--muted);
+    padding: 48px;
+    text-align: center;
+    font-size: 14px;
+  }
+
+  /* Drawer Modal */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    display: none;
+    z-index: 100;
+    animation: fadeIn 0.2s ease;
+  }
+  .scrim.open { display: block; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100%;
+    width: min(720px, 94vw);
+    background: var(--panel-solid);
+    border-left: 1px solid var(--line);
+    z-index: 101;
+    transform: translateX(100%);
+    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    display: flex;
+    flex-direction: column;
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
+  }
+  .drawer.open { transform: translateX(0); }
+
+  .drawer header {
+    max-width: none;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--panel-2);
+  }
+  .drawer .close-btn {
+    margin-left: auto;
+    background: var(--panel-solid);
+    border: 1px solid var(--line);
+    color: var(--text);
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 16px;
+    display: grid;
+    place-items: center;
+  }
+  .drawer .close-btn:hover {
+    border-color: var(--accent);
+  }
+  .drawer .body {
+    padding: 24px;
+    overflow-y: auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .drawer h2 {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-heading);
+  }
+  .drawer .sub {
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 3px;
+  }
+
+  .drawer-section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px;
+  }
+  .drawer-section h3 {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted-dark);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .comp-row {
+    display: grid;
+    grid-template-columns: 200px 1fr 44px;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .bar {
+    height: 8px;
+    background: var(--panel-2);
+    border-radius: 99px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+  }
+  .bar > span {
+    display: block;
+    height: 100%;
+    background: var(--accent-gradient);
+    border-radius: 99px;
+  }
+
+  .turn-card {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .turn-who {
+    flex-shrink: 0;
+    width: 60px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-top: 4px;
+  }
+  .turn-txt {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 14px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    flex: 1;
+  }
+
+  .grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    margin: 8px 0 4px;
+  }
+  input[type="text"], textarea {
+    width: 100%;
+    background: var(--panel-input);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    color: var(--text);
+    padding: 10px 12px;
+    font-family: inherit;
+    font-size: 13.5px;
+    outline: none;
+  }
+  input:focus, textarea:focus {
+    border-color: var(--accent);
+  }
+  textarea { min-height: 80px; resize: vertical; }
+
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--good);
+    color: #ffffff;
+    padding: 10px 20px;
+    border-radius: 12px;
+    font-weight: 600;
+    display: none;
+    z-index: 200;
+    box-shadow: 0 4px 20px rgba(16, 185, 129, 0.4);
+    animation: fadeInUp 0.2s ease;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">
+      <div class="logo-box">
+        <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 14.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm1.7-6.2l-.8.8a2.1 2.1 0 0 0-.6 1.4h-2.6a3.9 3.9 0 0 1 1.1-2.6l1.2-1.2A1.8 1.8 0 0 0 12 5.5a1.8 1.8 0 0 0-1.8 1.8H7.6a4.4 4.4 0 0 1 4.4-4.4 4.4 4.4 0 0 1 4.4 4.4 3.7 3.7 0 0 1-1.7 3z"/></svg>
+      </div>
+      <div class="brand-text">
+        <h1>Reviewer &amp; Hiring Dashboard</h1>
+        <p>Candidate ranking, integrity scores &amp; audits</p>
+      </div>
+    </a>
+    <div class="header-actions">
+      <button class="theme-toggle" id="themeToggle" title="Switch Theme">
+        <span id="themeIcon">🌙</span> <span id="themeLabel">Dark</span>
+      </button>
+      <a href="/" class="btn-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        New Interview
+      </a>
+    </div>
+  </header>
+
+  <main>
+    <div class="stats-grid" id="stats">
+      <!-- Injected Stats -->
+    </div>
+
+    <div class="toolbar">
+      <div class="search-box">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input type="text" id="searchInput" placeholder="Search candidate, role, email…">
+      </div>
+
+      <select id="statusFilter">
+        <option value="">All Statuses</option>
+        <option value="completed">Completed Only</option>
+        <option value="active">In Progress</option>
+      </select>
+
+      <select id="sortBy">
+        <option value="score">Sort: Highest Score</option>
+        <option value="integrity">Sort: Integrity Level</option>
+        <option value="recent">Sort: Most Recent</option>
+        <option value="name">Sort: Candidate Name</option>
+      </select>
+
+      <button class="ghost" onclick="load()">↻ Refresh</button>
+
+      <span class="spacer"></span>
+      <button class="ghost" onclick="location.href='/api/export.csv'">Export CSV</button>
+      <button class="ghost" onclick="location.href='/api/export.json'">Export JSON</button>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Candidate</th>
+            <th>Role &amp; Seniority</th>
+            <th>Type</th>
+            <th>Score</th>
+            <th>Integrity</th>
+            <th>AI Verdict</th>
+            <th>Human Verdict</th>
+            <th>Status</th>
+            <th>Date</th>
+          </tr>
+        </thead>
+        <tbody id="rows">
+          <!-- Rows -->
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <div class="scrim" id="scrim" onclick="closeDrawer()"></div>
+  <aside class="drawer" id="drawer">
+    <header>
+      <div>
+        <h2 id="dName">—</h2>
+        <div class="sub" id="dSub"></div>
+      </div>
+      <button class="close-btn" onclick="closeDrawer()">✕</button>
+    </header>
+    <div class="body" id="dBody"></div>
+  </aside>
+
+  <div class="toast" id="toast">Saved successfully</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let allInterviews = [];
+
+// ---------- Theme Toggle ----------
+function initTheme() {
+  const saved = localStorage.getItem("theme") || "dark";
+  document.documentElement.setAttribute("data-theme", saved);
+  updateThemeUI(saved);
+}
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme") || "dark";
+  const next = current === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem("theme", next);
+  updateThemeUI(next);
+}
+function updateThemeUI(theme) {
+  $("themeIcon").textContent = theme === "dark" ? "🌙" : "☀️";
+  $("themeLabel").textContent = theme === "dark" ? "Dark" : "Light";
+}
+$("themeToggle").onclick = toggleTheme;
+initTheme();
+
+async function load() {
+  const st = $("statusFilter").value, sort = $("sortBy").value;
+  try {
+    const stats = await (await fetch("/api/stats")).json();
+    $("stats").innerHTML = `
+      ${statCard("📊", stats.total, "Total Interviews")}
+      ${statCard("✅", stats.completed, "Completed Sessions")}
+      ${statCard("🎯", stats.avg_score != null ? `${stats.avg_score}%` : "—", "Average Score")}
+      ${statCard("👤", stats.reviewed, "Human-Reviewed")}
+      ${statCard("⚠️", stats.flagged ?? 0, "Integrity Flags")}`;
+  } catch (e) {}
+
+  try {
+    const data = await (await fetch(`/api/interviews?status=${st}&sort=${sort}`)).json();
+    allInterviews = data.interviews || [];
+    renderRows();
+  } catch (e) {
+    $("rows").innerHTML = `<tr><td colspan="9" class="empty-state">Error loading interviews: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderRows() {
+  const query = ($("searchInput").value || "").toLowerCase().trim();
+  const filtered = allInterviews.filter(r => {
+    if (!query) return true;
+    return (r.candidate_name || "").toLowerCase().includes(query) ||
+           (r.candidate_email || "").toLowerCase().includes(query) ||
+           (r.role || "").toLowerCase().includes(query);
+  });
+
+  const rows = $("rows");
+  if (!filtered.length) {
+    rows.innerHTML = `<tr><td colspan="9" class="empty-state">No interview records match your filter criteria.</td></tr>`;
+    return;
+  }
+
+  rows.innerHTML = "";
+  filtered.forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.onclick = () => openDrawer(r.id);
+    const initials = (r.candidate_name || "C").split(" ").map(w => w[0]).join("").slice(0,2).toUpperCase();
+
+    tr.innerHTML = `
+      <td>
+        <div class="candidate-cell">
+          <div class="candidate-avatar">${initials}</div>
+          <div>
+            <b>${esc(r.candidate_name)}</b><br>
+            <small style="color:var(--muted)">${esc(r.candidate_email || "no email")}</small>
+          </div>
+        </div>
+      </td>
+      <td>
+        <b>${esc(r.role || "Software Engineer")}</b><br>
+        <small style="color:var(--muted); text-transform:capitalize;">${esc(r.level || "mid")}</small>
+      </td>
+      <td style="text-transform:capitalize;">${esc(r.interview_type || "mixed")}</td>
+      <td>${r.weighted_total == null ? "—" : `<b style="font-size:15px; font-family:'JetBrains Mono'">${r.weighted_total}</b><small style="color:var(--muted)">/100</small>`}</td>
+      <td>${r.integrity_score == null ? '<span class="pill mute">—</span>' : intPill(r.integrity_score)}</td>
+      <td>${r.recommendation ? pill(r.recommendation, r.weighted_total) : '<span class="pill mute">—</span>'}</td>
+      <td>${r.human_recommendation ? pill(r.human_recommendation, (r.human_score||0)*20) : '<span class="pill mute">Pending</span>'}</td>
+      <td>${r.review_status === "reviewed" ? '<span class="pill good">Reviewed</span>' : '<span class="pill mute">Unreviewed</span>'}</td>
+      <td style="font-size:12px; color:var(--muted)">${fmtDate(r.created_at)}</td>`;
+    rows.appendChild(tr);
+  });
+}
+
+$("searchInput").oninput = renderRows;
+
+function statCard(icon, n, l) {
+  return `
+    <div class="stat-card">
+      <div class="stat-icon">${icon}</div>
+      <div class="num">${n}</div>
+      <div class="lbl">${l}</div>
+    </div>`;
+}
+
+function pill(text, score) {
+  const cls = score >= 65 ? "good" : score >= 50 ? "warn" : "bad";
+  return `<span class="pill ${cls}">${esc(text)}</span>`;
+}
+
+function intPill(score) {
+  const cls = score >= 90 ? "good" : score >= 70 ? "warn" : "bad";
+  return `<span class="pill ${cls}">🛡️ ${score}</span>`;
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+}
+
+function fmtDate(t) {
+  if (!t) return "—";
+  const d = new Date(t * 1000);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+async function openDrawer(id) {
+  const r = await (await fetch(`/api/interviews/${id}`)).json();
+  $("dName").textContent = r.candidate_name || "Candidate Assessment";
+  $("dSub").textContent = `${r.role || "Role"} · Seniority: ${(r.level || "mid").toUpperCase()} · ${fmtDate(r.created_at)}`;
+  const body = $("dBody");
+  body.innerHTML = "";
+
+  // Scorecard Section
+  if (r.competencies && r.competencies.length) {
+    const sec = document.createElement("div");
+    sec.className = "drawer-section";
+    sec.innerHTML = `
+      <h3>
+        <span>AI Rubric Evaluation</span>
+        ${r.weighted_total != null ? `<span>${r.weighted_total}/100</span>` : ""}
+      </h3>
+      <div style="margin-bottom:14px">${r.recommendation ? pill(r.recommendation, r.weighted_total) : ""}</div>
+    `;
+    r.competencies.forEach((c) => {
+      const d = document.createElement("div");
+      d.innerHTML = `
+        <div class="comp-row">
+          <div><b>${esc(c.name)}</b> <small style="color:var(--muted)">(wt ${c.weight})</small></div>
+          <div class="bar"><span style="width:${(c.score/5)*100}%"></span></div>
+          <div style="text-align:right"><b>${c.score}</b></div>
+        </div>
+        ${c.comment ? `<p style="font-size:12px; color:var(--muted); margin:-6px 0 10px;">• ${esc(c.comment)}</p>` : ""}`;
+      sec.appendChild(d);
+    });
+    if (r.summary) {
+      const p = document.createElement("p");
+      p.style.color = "var(--text)";
+      p.style.fontSize = "13.5px";
+      p.style.lineHeight = "1.6";
+      p.style.marginTop = "12px";
+      p.style.background = "var(--panel-2)";
+      p.style.padding = "12px 14px";
+      p.style.borderRadius = "10px";
+      p.textContent = r.summary;
+      sec.appendChild(p);
+    }
+    body.appendChild(sec);
+  }
+
+  // Integrity Section
+  if (r.integrity_score != null) {
+    const isec = document.createElement("div");
+    isec.className = "drawer-section";
+    isec.innerHTML = `<h3><span>Integrity &amp; Anti-Cheating</span> ${intPill(r.integrity_score)}</h3>`;
+    if ((r.flags || []).length) {
+      r.flags.forEach((f) => {
+        const d = document.createElement("div");
+        d.style.fontSize = "12.5px";
+        d.style.color = "var(--bad)";
+        d.style.margin = "6px 0";
+        d.innerHTML = `⚠️ <b>${esc(f.label)}</b> (occurred ${f.count}x, penalty −${f.penalty} pts)`;
+        isec.appendChild(d);
+      });
+    } else {
+      isec.innerHTML += `<p style="font-size:13px; color:var(--good);">✨ No integrity anomalies or suspicious actions detected.</p>`;
+    }
+    body.appendChild(isec);
+  }
+
+  // Compliance
+  const csec = document.createElement("div");
+  csec.className = "drawer-section";
+  csec.innerHTML = `
+    <h3>Data Privacy &amp; Retention</h3>
+    <p style="font-size:12.5px; color:var(--muted); line-height:1.6">
+      Consent: <b>${r.consent ? "Granted" : "Not Provided"}</b> ${r.consent_version ? `(v${esc(r.consent_version)})` : ""}<br>
+      Retention Window: Retain until <b>${fmtDate(r.retention_until)}</b>
+    </p>`;
+  body.appendChild(csec);
+
+  // Transcript
+  const tsec = document.createElement("div");
+  tsec.className = "drawer-section";
+  tsec.innerHTML = "<h3>Conversation Transcript</h3>";
+  (r.turns || []).forEach((t) => {
+    const el = document.createElement("div");
+    el.className = "turn-card";
+    const whoLabel = t.role === "interviewer" ? "AI" : "Candidate";
+    el.innerHTML = `
+      <div class="turn-who">${whoLabel}</div>
+      <div class="turn-txt">${esc(t.text)}</div>`;
+    tsec.appendChild(el);
+  });
+  if (!(r.turns || []).length) {
+    tsec.innerHTML += `<p style="color:var(--muted); font-size:13px">No transcript captured.</p>`;
+  }
+  body.appendChild(tsec);
+
+  // Human Review Form
+  const f = document.createElement("div");
+  f.className = "drawer-section";
+  f.innerHTML = `
+    <h3>Human Reviewer Evaluation</h3>
+    <div class="grid2">
+      <div>
+        <label>Reviewer Name</label>
+        <input type="text" id="rv" value="${esc(r.reviewer || "")}" placeholder="e.g. Lead Engineer">
+      </div>
+      <div>
+        <label>Your Score (0 - 100)</label>
+        <input type="text" id="hs" value="${r.human_score ?? ""}" placeholder="e.g. 85">
+      </div>
+    </div>
+    <label>Hiring Recommendation</label>
+    <input type="text" id="hr" value="${esc(r.human_recommendation || "")}" placeholder="e.g. Strong Hire, Hire, Lean Hire, No Hire">
+    <label>Review Notes &amp; Observations</label>
+    <textarea id="rn" placeholder="Strengths, technical depth, concerns, and next steps…">${esc(r.reviewer_notes || "")}</textarea>
+    <div style="margin-top:16px; display:flex; gap:10px;">
+      <button onclick="saveReview('${r.id}')">Save Review Decision</button>
+      <button class="ghost" style="color:var(--bad);" onclick="deleteInterview('${r.id}')">Purge Record</button>
+    </div>`;
+  body.appendChild(f);
+
+  $("scrim").classList.add("open");
+  $("drawer").classList.add("open");
+}
+
+function closeDrawer() {
+  $("scrim").classList.remove("open");
+  $("drawer").classList.remove("open");
+}
+
+async function saveReview(id) {
+  await fetch(`/api/interviews/${id}/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      reviewer: $("rv").value,
+      notes: $("rn").value,
+      human_score: $("hs").value,
+      human_recommendation: $("hr").value,
+    }),
+  });
+  toast("Review saved successfully");
+  closeDrawer();
+  load();
+}
+
+async function deleteInterview(id) {
+  if (!confirm("Delete this candidate record and transcript permanently?")) return;
+  await fetch(`/api/interviews/${id}/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}"
+  });
+  toast("Record deleted");
+  closeDrawer();
+  load();
+}
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  setTimeout(() => t.style.display = "none", 1800);
+}
+
+$("statusFilter").onchange = load;
+$("sortBy").onchange = load;
+load();
+</script>
+</body>
+</html>

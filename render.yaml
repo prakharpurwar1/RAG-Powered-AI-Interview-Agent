@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: ai-interview-bot
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn interviewer.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.8
+      - key: INTERVIEW_DB
+        value: interviews.db
+      - key: SESSION_TTL_SECONDS
+        value: 21600
+      # Optional: Add LLM or Voice API keys here
+      # - key: LLM_API_KEY
+      #   sync: false
+      # - key: SARVAM_API_KEY
+      #   sync: false
