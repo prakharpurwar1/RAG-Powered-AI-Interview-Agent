@@ -50,7 +50,13 @@ _VOICE_MOCK: Optional[bool] = None
 
 def get_store() -> Store:
     global _STORE, _STORE_PATH
-    path = os.environ.get("INTERVIEW_DB", "interviews.db")
+    is_serverless = bool(
+        os.environ.get("NETLIFY")
+        or os.environ.get("VERCEL")
+        or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    )
+    default_db = "/tmp/interviews.db" if is_serverless else "interviews.db"
+    path = os.environ.get("INTERVIEW_DB", default_db)
     if _STORE is None or _STORE_PATH != path:
         _STORE = Store(path)
         _STORE_PATH = path

@@ -1,0 +1,30 @@
+{
+  "builds": [
+    {
+      "src": "interviewer/main.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "interviewer/main.py"
+    },
+    {
+      "src": "/docs",
+      "dest": "interviewer/main.py"
+    },
+    {
+      "src": "/openapi.json",
+      "dest": "interviewer/main.py"
+    },
+    {
+      "src": "/dashboard",
+      "dest": "web/dashboard.html"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "web/$1"
+    }
+  ]
+}
