@@ -28,6 +28,10 @@ class InterviewConfig:
     randomize_order: bool = False      # shuffle questions per candidate
     proctoring: bool = True            # collect integrity signals
 
+    # --- Phase 2: Resume & Job Description ---
+    resume_text: str = ""              # Extracted readable resume text
+    job_description: str = ""          # Target job description text
+
     def validate(self) -> "InterviewConfig":
         if self.mode not in {"practice", "hiring"}:
             raise ValueError("mode must be 'practice' or 'hiring'")
@@ -39,4 +43,6 @@ class InterviewConfig:
             raise ValueError("hiring mode requires recorded consent (consent=true)")
         self.max_questions = max(1, min(20, int(self.max_questions)))
         self.retention_days = max(1, min(3650, int(self.retention_days)))
+        self.resume_text = str(self.resume_text or "").strip()
+        self.job_description = str(self.job_description or "").strip()
         return self

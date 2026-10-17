@@ -227,6 +227,90 @@ def test_dashboard_auth_gate():
             pass
 
 
+def test_document_endpoints_and_grounded_start():
+    import io, docx
+    # Generate docx in memory
+    doc = docx.Document()
+    doc.add_paragraph("Devin Patel - Staff Infrastructure Engineer")
+    doc.add_paragraph("Specialized in Kubernetes, Kafka, and distributed data stores.")
+    buf = io.BytesIO()
+    doc.save(buf)
+    b64_doc = base64.b64encode(buf.getvalue()).decode()
+
+    httpd, port, db = _start_server()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        # 1. Parse valid DOCX
+        st, body, _ = _post(base + "/api/documents/parse", {
+            "filename": "devin_resume.docx",
+            "content_b64": b64_doc,
+        })
+        assert st == 200
+        res = json.loads(body)
+        assert res["status"] == "ok"
+        assert "Devin Patel" in res["text"]
+        assert res["word_count"] > 5
+
+        # 2. Unsupported extension error
+        try:
+            _post(base + "/api/documents/parse", {
+                "filename": "resume.png",
+                "content_b64": b64_doc,
+            })
+            assert False, "expected 400 for unsupported extension"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+        # 3. Validate text JD
+        st, body, _ = _post(base + "/api/documents/validate-text", {
+            "text": "Seeking Staff Infrastructure Engineer to scale our Kubernetes clusters.",
+            "label": "Job description",
+        })
+        assert st == 200
+        assert "Kubernetes" in json.loads(body)["text"]
+
+        # 4. Start interview with resume and JD
+        st, body, _ = _post(base + "/api/start", {
+            "mock": True,
+            "candidate_name": "Devin Patel",
+            "interview_type": "technical",
+            "role": "Staff Infrastructure Engineer",
+            "resume_text": res["text"],
+            "job_description": "Scale Kubernetes and Kafka infrastructure.",
+        })
+        assert st == 200
+        start_res = json.loads(body)
+        iid = start_res["interview_id"]
+
+        # Verify persisted resume and JD in store
+        detail = srv._store().get_interview(iid)
+        assert "Devin Patel" in detail["resume_text"]
+        assert "Kubernetes" in detail["job_description"]
+
+        # 5. Verify RAG chunks indexed via API
+        st, body, _ = _get(base + f"/api/interviews/{iid}/chunks")
+        assert st == 200
+        chunk_data = json.loads(body)
+        assert chunk_data["count"] >= 1
+        assert any("Kubernetes" in c["text"] or "Devin" in c["text"] for c in chunk_data["chunks"])
+
+        # 6. Verify RAG retrieval endpoint
+        st, body, _ = _post(base + f"/api/interviews/{iid}/retrieve", {
+            "query": "Kubernetes cluster scaling",
+            "top_k": 2,
+        })
+        assert st == 200
+        ret_data = json.loads(body)
+        assert len(ret_data["results"]) >= 1
+        assert "score" in ret_data["results"][0]
+    finally:
+        httpd.shutdown()
+        try:
+            os.unlink(db)
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

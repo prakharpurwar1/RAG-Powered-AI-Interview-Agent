@@ -377,6 +377,194 @@
     cursor: pointer;
   }
 
+  /* Document Upload Section (Phase 2) */
+  .doc-section {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 6px;
+    margin-bottom: 8px;
+  }
+  @media (max-width: 680px) {
+    .doc-section { grid-template-columns: 1fr; }
+  }
+  .doc-card {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: all 0.2s ease;
+  }
+  .doc-card:hover {
+    border-color: rgba(99, 102, 241, 0.35);
+  }
+  .doc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .doc-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--text-heading);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .doc-desc {
+    font-size: 11.5px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .drop-zone {
+    border: 2px dashed var(--line);
+    border-radius: 12px;
+    padding: 16px 12px;
+    text-align: center;
+    cursor: pointer;
+    background: var(--panel-input);
+    transition: all 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.08);
+  }
+  .drop-zone svg {
+    width: 26px;
+    height: 26px;
+    stroke: var(--accent);
+  }
+  .drop-zone-text {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .drop-zone-sub {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .btn-browse {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel-hover);
+    border: 1px solid var(--accent);
+    color: var(--text-heading);
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 4px;
+    pointer-events: none;
+    transition: all 0.2s ease;
+  }
+  .drop-zone:hover .btn-browse {
+    background: var(--accent);
+    color: #ffffff;
+  }
+  .sr-only-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+    opacity: 0;
+  }
+  .doc-status-badge {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 12px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 500;
+    gap: 8px;
+  }
+  .doc-status-success {
+    background: var(--good-bg);
+    color: var(--good);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+  }
+  .doc-status-error {
+    background: var(--bad-bg);
+    color: var(--bad);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+  }
+  .doc-status-loading {
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--accent);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+  }
+  .doc-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 2px;
+  }
+  .doc-tab-btn {
+    padding: 5px 11px;
+    border-radius: 8px;
+    background: var(--panel-input);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .doc-tab-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+  .doc-textarea {
+    width: 100%;
+    min-height: 85px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--panel-input);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+    outline: none;
+    line-height: 1.45;
+  }
+  .doc-preview-box {
+    max-height: 110px;
+    overflow-y: auto;
+    font-size: 11.5px;
+    color: var(--muted);
+    background: var(--panel-input);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    line-height: 1.4;
+  }
+  .setup-alert-banner {
+    background: var(--bad-bg);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: var(--bad);
+    padding: 12px 16px;
+    border-radius: 12px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
   /* Primary Action Button */
   .btn-primary {
     display: inline-flex;
@@ -848,6 +1036,42 @@
     color: var(--muted);
     line-height: 1.5;
   }
+  .methodology-banner {
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.22);
+    border-radius: 12px;
+    padding: 12px 16px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text);
+    margin: 16px 0;
+  }
+  .synthesis-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 14px;
+    margin: 16px 0 20px;
+  }
+  .synthesis-col {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .synthesis-title {
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .synthesis-list {
+    margin: 0 0 0 16px;
+    padding: 0;
+    font-size: 12.5px;
+    color: var(--text);
+    line-height: 1.6;
+  }
 
   .report-actions {
     display: flex;
@@ -915,6 +1139,8 @@
         <h2>Configure Interview Session</h2>
         <p>Tailor the role, seniority, and evaluation criteria for candidate screening or practice</p>
       </div>
+
+      <div id="setupAlert" class="setup-alert-banner hidden"></div>
 
       <div class="section-label">Session Parameters</div>
       <div class="grid">
@@ -988,6 +1214,67 @@
             <option value="mr-IN">🇮🇳 Marathi (मराठी)</option>
             <option value="kn-IN">🇮🇳 Kannada (ಕನ್ನಡ)</option>
           </select>
+        </div>
+      </div>
+
+      <div class="section-label" style="margin-top: 20px;">Candidate Resume &amp; Job Description (Personalization)</div>
+      <div class="doc-section">
+        <!-- Resume Upload Card -->
+        <div class="doc-card">
+          <div class="doc-header">
+            <span class="doc-title">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+              Candidate Resume
+            </span>
+            <span style="font-size:11px; font-weight:600; color:var(--accent);">PDF / DOCX</span>
+          </div>
+          <p class="doc-desc">Upload candidate resume to personalize interview questions against their verified career experience.</p>
+
+          <input type="file" id="resumeFileInput" accept=".pdf,.docx" class="sr-only-input">
+          <label for="resumeFileInput" class="drop-zone" id="resumeDropZone">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <div class="drop-zone-text" id="resumeDropText">Click or Drag &amp; Drop Resume</div>
+            <div class="drop-zone-sub">Supported formats: .pdf, .docx (Max 10MB)</div>
+            <span class="btn-browse">📂 Choose Resume Document</span>
+          </label>
+
+          <div id="resumeStatus" class="doc-status-badge hidden"></div>
+          <div id="resumePreview" class="doc-preview-box hidden"></div>
+        </div>
+
+        <!-- Job Description Card -->
+        <div class="doc-card">
+          <div class="doc-header">
+            <span class="doc-title">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+              Target Job Description
+            </span>
+            <div class="doc-tabs">
+              <button type="button" class="doc-tab-btn active" id="jdTabPaste" onclick="switchJdMode('paste')">Paste Text</button>
+              <button type="button" class="doc-tab-btn" id="jdTabUpload" onclick="switchJdMode('upload')">Upload File</button>
+            </div>
+          </div>
+          <p class="doc-desc">Provide target job description so the interviewer can evaluate requirements, stack, and seniority.</p>
+
+          <div id="jdPasteArea">
+            <textarea id="jdText" class="doc-textarea" placeholder="Paste job description requirements, responsibilities, or technical requirements here..."></textarea>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+              <small id="jdWordCount" style="color:var(--muted); font-size:11px;">0 words</small>
+            </div>
+          </div>
+
+          <div id="jdUploadArea" class="hidden">
+            <input type="file" id="jdFileInput" accept=".pdf,.docx" class="sr-only-input">
+            <label for="jdFileInput" class="drop-zone" id="jdDropZone">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <div class="drop-zone-text" id="jdDropText">Click or Drag &amp; Drop JD</div>
+              <div class="drop-zone-sub">Supported formats: .pdf, .docx (Max 10MB)</div>
+              <span class="btn-browse">📂 Choose JD Document</span>
+            </label>
+          </div>
+
+          <div id="jdStatus" class="doc-status-badge hidden"></div>
+          <div id="jdPreview" class="doc-preview-box hidden"></div>
         </div>
       </div>
 
@@ -1126,7 +1413,28 @@
         Generating comprehensive analysis…
       </div>
 
-      <div class="section-label">Competency Breakdown</div>
+      <!-- Phase 4: Scoring Methodology -->
+      <div id="methodologyBox" class="methodology-banner" style="display:none;"></div>
+
+      <!-- Phase 4: Key Strengths & Priority Improvements Synthesis -->
+      <div id="synthesisGrid" class="synthesis-grid" style="display:none;">
+        <div class="synthesis-col">
+          <div class="synthesis-title" style="color:var(--good);">✨ Key Demonstrated Strengths</div>
+          <ul id="keyStrengthsList" class="synthesis-list"></ul>
+        </div>
+        <div class="synthesis-col">
+          <div class="synthesis-title" style="color:var(--warn);">🎯 Priority Improvement Areas</div>
+          <ul id="priorityImprovementsList" class="synthesis-list"></ul>
+        </div>
+      </div>
+
+      <!-- Phase 4: Recommended Practice Topics -->
+      <div id="practiceTopicsCard" style="margin: 16px 0; display:none;">
+        <div class="section-label">Recommended Practice Topics</div>
+        <div id="practiceTopicsList" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
+      </div>
+
+      <div class="section-label">Competency-Wise Evidence Breakdown</div>
       <div class="competency-grid" id="compList"></div>
 
       <div class="report-actions">
@@ -1137,7 +1445,8 @@
   </main>
 
 <script>
-const $ = (id) => document.getElementById(id);
+window.$ = (id) => document.getElementById(id);
+const $ = window.$;
 let sessionId = null, ttsOn = true, caps = null, proctoring = true, bargeIn = true;
 let timerInterval = null, timerSeconds = 0;
 
@@ -1200,12 +1509,212 @@ function startTimer() {
 }
 function stopTimer() { clearInterval(timerInterval); }
 
+// ---------- Document Processing (Phase 2) ----------
+let resumeData = { filename: "", text: "", wordCount: 0, charCount: 0, status: "idle" };
+let jdData = { filename: "", text: "", wordCount: 0, charCount: 0, status: "idle" };
+let currentJdMode = "paste";
+
+function showSetupAlert(msg) {
+  const el = $("setupAlert");
+  el.textContent = "⚠️ " + msg;
+  el.classList.remove("hidden");
+  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function hideSetupAlert() {
+  $("setupAlert").classList.add("hidden");
+  $("setupAlert").textContent = "";
+}
+
+function switchJdMode(mode) {
+  currentJdMode = mode;
+  $("jdTabPaste").classList.toggle("active", mode === "paste");
+  $("jdTabUpload").classList.toggle("active", mode === "upload");
+  $("jdPasteArea").classList.toggle("hidden", mode !== "paste");
+  $("jdUploadArea").classList.toggle("hidden", mode !== "upload");
+}
+
+$("jdText").oninput = () => {
+  const txt = $("jdText").value.trim();
+  const words = txt ? txt.split(/\s+/).length : 0;
+  $("jdWordCount").textContent = `${words} words (${txt.length} chars)`;
+  jdData.text = txt;
+  jdData.wordCount = words;
+  jdData.charCount = txt.length;
+};
+
+async function uploadAndParseDocument(file, target) {
+  hideSetupAlert();
+  const isResume = target === "resume";
+  const statusEl = isResume ? $("resumeStatus") : $("jdStatus");
+  const previewEl = isResume ? $("resumePreview") : $("jdPreview");
+  const dropTextEl = isResume ? $("resumeDropText") : $("jdDropText");
+
+  if (!file) return;
+  const ext = file.name.slice(((file.name.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
+  if (ext !== "pdf" && ext !== "docx") {
+    statusEl.className = "doc-status-badge doc-status-error";
+    statusEl.innerHTML = `<span>⚠️ Unsupported file format (.${ext}). Only PDF (.pdf) and Word (.docx) files are supported.</span>`;
+    statusEl.classList.remove("hidden");
+    if (isResume) resumeData.status = "error"; else jdData.status = "error";
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    statusEl.className = "doc-status-badge doc-status-error";
+    statusEl.innerHTML = `<span>⚠️ File size exceeds 10MB limit (${(file.size / (1024*1024)).toFixed(1)}MB).</span>`;
+    statusEl.classList.remove("hidden");
+    if (isResume) resumeData.status = "error"; else jdData.status = "error";
+    return;
+  }
+  if (file.size === 0) {
+    statusEl.className = "doc-status-badge doc-status-error";
+    statusEl.innerHTML = `<span>⚠️ The selected file is empty (0 bytes).</span>`;
+    statusEl.classList.remove("hidden");
+    if (isResume) resumeData.status = "error"; else jdData.status = "error";
+    return;
+  }
+
+  statusEl.className = "doc-status-badge doc-status-loading";
+  statusEl.innerHTML = `<span>⏳ Extracting text from ${file.name}…</span>`;
+  statusEl.classList.remove("hidden");
+  previewEl.classList.add("hidden");
+
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const resp = await fetch("/api/documents/parse", {
+      method: "POST",
+      body: formData,
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.detail || result.error || "Failed to extract text from document");
+    }
+
+    if (!result.text || !result.text.trim()) {
+      throw new Error("No readable text could be extracted from this document.");
+    }
+
+    if (isResume) {
+      resumeData = {
+        filename: result.filename,
+        text: result.text,
+        wordCount: result.word_count,
+        charCount: result.char_count,
+        status: "success",
+      };
+      dropTextEl.textContent = `📄 ${result.filename}`;
+      statusEl.className = "doc-status-badge doc-status-success";
+      statusEl.innerHTML = `
+        <span>✅ Resume parsed: <b>${result.word_count} words</b> (${result.format})</span>
+        <button type="button" class="doc-tab-btn" style="padding:2px 8px; font-size:10.5px;" onclick="toggleDocPreview('resume')">Preview</button>
+      `;
+      previewEl.textContent = result.text.slice(0, 500) + (result.text.length > 500 ? "\n... (preview truncated)" : "");
+    } else {
+      jdData = {
+        filename: result.filename,
+        text: result.text,
+        wordCount: result.word_count,
+        charCount: result.char_count,
+        status: "success",
+      };
+      $("jdText").value = result.text;
+      $("jdWordCount").textContent = `${result.word_count} words (${result.char_count} chars)`;
+      dropTextEl.textContent = `🎯 ${result.filename}`;
+      statusEl.className = "doc-status-badge doc-status-success";
+      statusEl.innerHTML = `
+        <span>✅ JD parsed: <b>${result.word_count} words</b> (${result.format})</span>
+        <button type="button" class="doc-tab-btn" style="padding:2px 8px; font-size:10.5px;" onclick="toggleDocPreview('jd')">Preview</button>
+      `;
+      previewEl.textContent = result.text.slice(0, 500) + (result.text.length > 500 ? "\n... (preview truncated)" : "");
+    }
+  } catch (err) {
+    if (isResume) {
+      resumeData.status = "error";
+      resumeData.text = "";
+    } else {
+      jdData.status = "error";
+      jdData.text = "";
+    }
+    statusEl.className = "doc-status-badge doc-status-error";
+    statusEl.innerHTML = `<span>⚠️ ${err.message}</span>`;
+  }
+}
+
+function toggleDocPreview(target) {
+  const previewEl = target === "resume" ? $("resumePreview") : $("jdPreview");
+  previewEl.classList.toggle("hidden");
+}
+
+function setupDropZone(dropZoneId, fileInputId, target) {
+  const dropZone = $(dropZoneId);
+  const fileInput = $(fileInputId);
+  if (!dropZone || !fileInput) return;
+
+  fileInput.addEventListener("change", (e) => {
+    if (e.target.files && e.target.files[0]) {
+      const f = e.target.files[0];
+      uploadAndParseDocument(f, target);
+      fileInput.value = "";
+    }
+  });
+
+  ["dragenter", "dragover"].forEach((evt) => {
+    dropZone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.add("dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach((evt) => {
+    dropZone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.remove("dragover");
+    });
+  });
+  dropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.classList.remove("dragover");
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+      uploadAndParseDocument(e.dataTransfer.files[0], target);
+    }
+  });
+}
+
+setupDropZone("resumeDropZone", "resumeFileInput", "resume");
+setupDropZone("jdDropZone", "jdFileInput", "jd");
+
 // ---------- Start Interview ----------
 $("startBtn").onclick = async () => {
+  hideSetupAlert();
   ttsOn = $("ttsOn").checked;
   const hiring = $("mode").value === "hiring";
   if (hiring && !$("consent").checked) {
-    alert("Candidate consent is required for hiring screening mode.");
+    showSetupAlert("Candidate consent is required for hiring screening mode.");
+    return;
+  }
+
+  // Phase 2: Resume & Job Description validation
+  if (resumeData.status === "error") {
+    showSetupAlert("The uploaded resume could not be processed. Please upload a readable PDF or DOCX file.");
+    return;
+  }
+  if (jdData.status === "error") {
+    showSetupAlert("The uploaded job description could not be processed. Please fix the file or paste the job description text.");
+    return;
+  }
+
+  const resumeText = (resumeData.text || "").trim();
+  const jdText = (currentJdMode === "paste" ? $("jdText").value : (jdData.text || $("jdText").value)).trim();
+
+  if (!resumeText) {
+    showSetupAlert("Please upload the candidate's resume (PDF or DOCX) so the AI interviewer can personalize the questions to their verified experience.");
+    return;
+  }
+  if (!jdText) {
+    showSetupAlert("Please provide a target job description (paste text or upload PDF/DOCX) so the interviewer can evaluate requirements.");
     return;
   }
 
@@ -1226,6 +1735,8 @@ $("startBtn").onclick = async () => {
     consent: $("consent").checked,
     randomize_order: $("randomize").checked,
     proctoring: true,
+    resume_text: resumeText,
+    job_description: jdText,
   };
   bargeIn = $("bargeIn").checked;
   $("startBtn").disabled = true;
@@ -1248,7 +1759,7 @@ $("startBtn").onclick = async () => {
     addMsg("bot", r.message);
     speak(r.message);
   } catch (e) {
-    alert("Could not start interview: " + e.message);
+    showSetupAlert("Could not start interview: " + e.message);
     $("startBtn").disabled = false;
   }
 };
@@ -1285,6 +1796,7 @@ async function send() {
     }
   } catch (e) {
     setStatus("Error: " + e.message);
+    addMsg("bot", "⚠️ " + e.message);
   } finally {
     $("sendBtn").disabled = false;
   }
@@ -1312,33 +1824,126 @@ async function showReport() {
 }
 
 function renderReport(rep) {
-  const sc = rep.scorecard;
-  $("scoreTotal").textContent = sc.weighted_total;
+  const sc = rep.scorecard || {};
+  $("scoreTotal").textContent = sc.weighted_total != null ? sc.weighted_total : "--";
   const rec = $("scoreRec");
-  rec.textContent = sc.recommendation;
-  rec.className = "pill " + (sc.weighted_total >= 65 ? "good" : sc.weighted_total >= 50 ? "warn" : "bad");
+  rec.textContent = sc.recommendation || "--";
+  const total = sc.weighted_total || 0;
+  rec.className = "pill " + (total >= 65 ? "good" : total >= 50 ? "warn" : "bad");
 
-  $("reportCandidateMeta").textContent = `${rep.candidate_name || 'Candidate'} · ${rep.role || 'Software Engineer'} (${rep.level || 'mid'})`;
-  $("scoreSummary").textContent = sc.summary;
+  $("reportCandidateMeta").textContent = `${rep.candidate_name || 'Candidate'} · ${rep.role || 'Software Engineer'} (${(rep.level || 'mid').toUpperCase()})`;
+  $("scoreSummary").textContent = sc.summary || "No summary available.";
 
+  // Methodology
+  if (sc.scoring_methodology) {
+    $("methodologyBox").style.display = "block";
+    $("methodologyBox").innerHTML = `<b>📐 Scoring Methodology:</b> ${esc(sc.scoring_methodology)}`;
+  } else {
+    $("methodologyBox").style.display = "none";
+  }
+
+  // Key Strengths & Priority Improvements
+  const hasStrengths = sc.key_strengths && sc.key_strengths.length;
+  const hasImprovements = sc.priority_improvements && sc.priority_improvements.length;
+  if (hasStrengths || hasImprovements) {
+    $("synthesisGrid").style.display = "grid";
+    $("keyStrengthsList").innerHTML = (sc.key_strengths || []).map(s => `<li>${esc(s)}</li>`).join("") || "<li>None recorded</li>";
+    $("priorityImprovementsList").innerHTML = (sc.priority_improvements || []).map(p => `<li>${esc(p)}</li>`).join("") || "<li>None recorded</li>";
+  } else {
+    $("synthesisGrid").style.display = "none";
+  }
+
+  // Practice Topics
+  if (sc.recommended_practice_topics && sc.recommended_practice_topics.length) {
+    $("practiceTopicsCard").style.display = "block";
+    $("practiceTopicsList").innerHTML = sc.recommended_practice_topics.map(t =>
+      `<span class="pill" style="background:var(--panel-input); border:1px solid var(--line); font-size:12px; color:var(--text); padding:4px 10px;">📚 ${esc(t)}</span>`
+    ).join("");
+  } else {
+    $("practiceTopicsCard").style.display = "none";
+  }
+
+  // Competency Cards
   const list = $("compList");
   list.innerHTML = "";
-  sc.competencies.forEach((c) => {
+  (sc.competencies || []).forEach((c) => {
     const item = document.createElement("div");
     item.className = "comp-item";
-    const percent = Math.min(100, Math.round((c.score / 5) * 100));
+    const isEval = c.status === "evaluated" && c.score != null;
+    const percent = isEval ? Math.min(100, Math.round((c.score / 5) * 100)) : 0;
+    const statusLabel = c.status_label || (isEval ? (c.score >= 4 ? "Strength" : c.score >= 3 ? "Proficient" : "Developing") : "Insufficient Evidence");
+    const statusClass = !isEval ? "muted" : (c.score >= 4 ? "good" : c.score >= 3 ? "accent" : "warn");
+
+    let strengthsHtml = "";
+    if (c.strengths && c.strengths.length) {
+      strengthsHtml = `
+        <div style="margin-top:10px;">
+          <div style="font-size:11.5px; font-weight:600; color:var(--good); text-transform:uppercase; letter-spacing:0.5px;">✓ Strengths Demonstrated</div>
+          <ul style="margin:4px 0 0 16px; font-size:12.5px; color:var(--text); line-height:1.5;">
+            ${c.strengths.map(s => `<li>${esc(s)}</li>`).join("")}
+          </ul>
+        </div>`;
+    }
+
+    let missingHtml = "";
+    if (c.missing_details && c.missing_details.length) {
+      missingHtml = `
+        <div style="margin-top:10px;">
+          <div style="font-size:11.5px; font-weight:600; color:var(--warn); text-transform:uppercase; letter-spacing:0.5px;">⚠ Missing Details &amp; Gaps</div>
+          <ul style="margin:4px 0 0 16px; font-size:12.5px; color:var(--muted); line-height:1.5;">
+            ${c.missing_details.map(m => `<li>${esc(m)}</li>`).join("")}
+          </ul>
+        </div>`;
+    }
+
+    let suggestionHtml = "";
+    if (c.improvement_suggestion) {
+      suggestionHtml = `
+        <div style="margin-top:10px; background:var(--panel-input); border-left:3px solid var(--accent); padding:8px 12px; border-radius:6px; font-size:12.5px; color:var(--text);">
+          <b>💡 Improvement Advice:</b> ${esc(c.improvement_suggestion)}
+        </div>`;
+    }
+
+    let starExampleHtml = "";
+    if (c.stronger_answer_example) {
+      starExampleHtml = `
+        <details style="margin-top:12px; font-size:12.5px; border-top:1px dashed var(--line); padding-top:8px;">
+          <summary style="cursor:pointer; color:var(--accent); font-weight:600; outline:none;">
+            ⭐ Example of a Stronger Answer (STAR Framework)
+          </summary>
+          <div style="background:var(--panel-input); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-top:8px; line-height:1.5; color:var(--text); white-space:pre-wrap;">${esc(c.stronger_answer_example)}</div>
+        </details>`;
+    }
+
+    let evidenceHtml = "";
+    if (c.evidence && c.evidence.toLowerCase() !== "no evidence captured." && c.status === "evaluated") {
+      evidenceHtml = `
+        <div style="margin-top:8px; background:rgba(99,102,241,0.06); border:1px solid rgba(99,102,241,0.18); border-radius:8px; padding:8px 12px; font-size:12px; color:var(--text);">
+          <span style="font-weight:600; color:var(--accent);">💬 Candidate Evidence:</span> <i>"${esc(c.evidence)}"</i>
+        </div>`;
+    }
+
     item.innerHTML = `
       <div class="comp-header">
         <div>
-          <span class="comp-name">${c.name}</span>
+          <span class="comp-name">${esc(c.name)}</span>
           <span style="font-size:11.5px; color:var(--muted); margin-left:6px;">(weight: ${c.weight})</span>
         </div>
-        <div class="comp-score">${c.score} / 5.0</div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="pill ${statusClass}" style="font-size:11px; padding:3px 8px;">${statusLabel}</span>
+          <div class="comp-score">${isEval ? `${c.score} / 5.0` : 'Unassessed'}</div>
+        </div>
       </div>
+      ${isEval ? `
       <div class="comp-progress">
         <div class="comp-progress-fill" style="width: ${percent}%"></div>
-      </div>
-      ${c.comment ? `<div class="comp-comment">${c.comment}</div>` : ''}
+      </div>` : ''}
+      <div class="comp-comment">${esc(c.explanation || c.comment || '')}</div>
+      ${evidenceHtml}
+      ${strengthsHtml}
+      ${missingHtml}
+      ${suggestionHtml}
+      ${starExampleHtml}
     `;
     list.appendChild(item);
   });
@@ -1393,7 +1998,7 @@ async function post(url, body) {
     body: JSON.stringify(body)
   });
   const data = await r.json();
-  if (!r.ok) throw new Error(data.error || r.statusText);
+  if (!r.ok) throw new Error(data.error || data.detail || r.statusText);
   return data;
 }
 

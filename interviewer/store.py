@@ -38,20 +38,34 @@ CREATE TABLE IF NOT EXISTS interviews (
     integrity_score REAL, flags TEXT, proctor_events INTEGER DEFAULT 0,
     review_status TEXT DEFAULT 'unreviewed',
     reviewer TEXT, reviewer_notes TEXT,
-    human_score REAL, human_recommendation TEXT
+    human_score REAL, human_recommendation TEXT,
+    resume_text TEXT, job_description TEXT
 );
 CREATE TABLE IF NOT EXISTS turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     interview_id TEXT, idx INTEGER,
-    role TEXT, text TEXT, stage TEXT, question_id TEXT, kind TEXT
+    role TEXT, text TEXT, stage TEXT, question_id TEXT, kind TEXT,
+    evidence TEXT
 );
 CREATE TABLE IF NOT EXISTS competencies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     interview_id TEXT, comp_id TEXT, name TEXT, weight REAL,
     score REAL, evidence TEXT, comment TEXT
 );
+CREATE TABLE IF NOT EXISTS document_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    interview_id TEXT NOT NULL,
+    doc_type TEXT NOT NULL,
+    section TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_turns_interview ON turns(interview_id);
 CREATE INDEX IF NOT EXISTS idx_comp_interview ON competencies(interview_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_interview ON document_chunks(interview_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_doc_type ON document_chunks(interview_id, doc_type);
 CREATE INDEX IF NOT EXISTS idx_email ON interviews(candidate_email);
 """
 
@@ -59,6 +73,8 @@ CREATE INDEX IF NOT EXISTS idx_email ON interviews(candidate_email);
 _NEW_COLUMNS = {
     "consent_at": "REAL", "consent_version": "TEXT", "retention_until": "REAL",
     "integrity_score": "REAL", "flags": "TEXT", "proctor_events": "INTEGER DEFAULT 0",
+    "resume_text": "TEXT", "job_description": "TEXT",
+    "evaluation_report": "TEXT",
 }
 
 
@@ -77,6 +93,11 @@ class Store:
         for name, typ in _NEW_COLUMNS.items():
             if name not in cols:
                 self._conn.execute(f"ALTER TABLE interviews ADD COLUMN {name} {typ}")
+
+        turn_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(turns)")}
+        if "evidence" not in turn_cols:
+            self._conn.execute("ALTER TABLE turns ADD COLUMN evidence TEXT")
+
         self._conn.commit()
 
     # -- writes -----------------------------------------------------------
@@ -91,46 +112,52 @@ class Store:
                    (id, created_at, updated_at, status, mode, interview_type, role,
                     level, candidate_name, candidate_email, company, language,
                     consent, consent_at, consent_version, retention_until, llm,
-                    review_status, proctor_events)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    review_status, proctor_events, resume_text, job_description)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (iid, now, now, "active", config.get("mode"), config.get("interview_type"),
                  config.get("role"), config.get("level"), config.get("candidate_name"),
                  config.get("candidate_email"), config.get("company"),
                  config.get("language"), consent, now if consent else None,
                  config.get("consent_version"), now + days * 86400, llm,
-                 "unreviewed", 0),
+                 "unreviewed", 0, str(config.get("resume_text") or ""),
+                 str(config.get("job_description") or "")),
             )
             self._conn.commit()
         return iid
 
     def add_turn(self, interview_id, idx, turn: dict):
+        ev = turn.get("evidence")
+        ev_str = json.dumps(ev) if ev is not None and not isinstance(ev, str) else ev
         with self._lock:
             self._conn.execute(
-                """INSERT INTO turns (interview_id, idx, role, text, stage, question_id, kind)
-                   VALUES (?,?,?,?,?,?,?)""",
+                """INSERT INTO turns (interview_id, idx, role, text, stage, question_id, kind, evidence)
+                   VALUES (?,?,?,?,?,?,?,?)""",
                 (interview_id, idx, turn.get("role"), turn.get("text"), turn.get("stage"),
-                 turn.get("question_id"), turn.get("kind")),
+                 turn.get("question_id"), turn.get("kind"), ev_str),
             )
             self._conn.execute("UPDATE interviews SET updated_at=? WHERE id=?",
                                (time.time(), interview_id))
             self._conn.commit()
 
     def save_scorecard(self, interview_id, scorecard: dict):
+        report_json = json.dumps(scorecard)
         with self._lock:
             self._conn.execute("DELETE FROM competencies WHERE interview_id=?", (interview_id,))
             for c in scorecard.get("competencies", []):
+                cmt = str(c.get("explanation") or c.get("comment") or "")
                 self._conn.execute(
                     """INSERT INTO competencies
                        (interview_id, comp_id, name, weight, score, evidence, comment)
                        VALUES (?,?,?,?,?,?,?)""",
                     (interview_id, c.get("id"), c.get("name"), c.get("weight"),
-                     c.get("score"), c.get("evidence"), c.get("comment")),
+                     c.get("score"), c.get("evidence"), cmt),
                 )
             self._conn.execute(
                 """UPDATE interviews SET status='completed', updated_at=?,
-                   weighted_total=?, recommendation=?, summary=? WHERE id=?""",
+                   weighted_total=?, recommendation=?, summary=?, evaluation_report=? WHERE id=?""",
                 (time.time(), scorecard.get("weighted_total"),
-                 scorecard.get("recommendation"), scorecard.get("summary"), interview_id),
+                 scorecard.get("recommendation"), scorecard.get("summary"),
+                 report_json, interview_id),
             )
             self._conn.commit()
 
@@ -154,10 +181,64 @@ class Store:
             )
             self._conn.commit()
 
+    # -- RAG Document Chunks ----------------------------------------------
+    def save_document_chunks(self, interview_id: str, chunks: list, doc_type: str | None = None):
+        """Persist embedded chunks for an interview. Idempotently cleans up previous chunks."""
+        with self._lock:
+            if doc_type:
+                self._conn.execute(
+                    "DELETE FROM document_chunks WHERE interview_id=? AND doc_type=?",
+                    (interview_id, doc_type),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM document_chunks WHERE interview_id=?",
+                    (interview_id,),
+                )
+            for c in chunks:
+                c_dict = c if isinstance(c, dict) else vars(c)
+                emb = c_dict.get("embedding")
+                emb_json = json.dumps(emb) if emb is not None else "[]"
+                self._conn.execute(
+                    """INSERT INTO document_chunks
+                       (interview_id, doc_type, section, chunk_index, text, embedding, created_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (interview_id, c_dict.get("doc_type"), c_dict.get("section"),
+                     int(c_dict.get("chunk_index", 0)), str(c_dict.get("text", "")),
+                     emb_json, float(c_dict.get("created_at") or time.time())),
+                )
+            self._conn.commit()
+
+    def get_document_chunks(self, interview_id: str, doc_type: str | None = None) -> list:
+        """Fetch chunks for an interview session. Strictly filters by interview_id for isolation."""
+        with self._lock:
+            q = "SELECT * FROM document_chunks WHERE interview_id=?"
+            args = [interview_id]
+            if doc_type:
+                q += " AND doc_type=?"
+                args.append(doc_type)
+            q += " ORDER BY chunk_index ASC"
+            rows = self._conn.execute(q, args).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["embedding"] = json.loads(d["embedding"]) if d.get("embedding") else []
+            except Exception:
+                d["embedding"] = []
+            result.append(d)
+        return result
+
+    def delete_document_chunks(self, interview_id: str):
+        with self._lock:
+            self._conn.execute("DELETE FROM document_chunks WHERE interview_id=?", (interview_id,))
+            self._conn.commit()
+
     def delete_interview(self, interview_id):
         with self._lock:
             self._conn.execute("DELETE FROM turns WHERE interview_id=?", (interview_id,))
             self._conn.execute("DELETE FROM competencies WHERE interview_id=?", (interview_id,))
+            self._conn.execute("DELETE FROM document_chunks WHERE interview_id=?", (interview_id,))
             self._conn.execute("DELETE FROM interviews WHERE id=?", (interview_id,))
             self._conn.commit()
 
@@ -207,13 +288,35 @@ class Store:
                 "SELECT * FROM turns WHERE interview_id=? ORDER BY idx", (interview_id,))]
             comps = [dict(r) for r in self._conn.execute(
                 "SELECT * FROM competencies WHERE interview_id=? ORDER BY id", (interview_id,))]
+            # Chunk statistics
+            chunk_stats_rows = self._conn.execute(
+                "SELECT doc_type, COUNT(*) as c FROM document_chunks WHERE interview_id=? GROUP BY doc_type",
+                (interview_id,),
+            ).fetchall()
         out = dict(row)
+        for t in turns:
+            if t.get("evidence"):
+                try:
+                    t["evidence"] = json.loads(t["evidence"])
+                except Exception:
+                    pass
         out["turns"] = turns
         out["competencies"] = comps
+        chunk_counts = {r["doc_type"]: r["c"] for r in chunk_stats_rows}
+        out["chunk_stats"] = {
+            "resume_chunks": chunk_counts.get("resume", 0),
+            "jd_chunks": chunk_counts.get("job_description", 0),
+            "total": sum(chunk_counts.values()),
+        }
         try:
             out["flags"] = json.loads(out["flags"]) if out["flags"] else []
         except (TypeError, ValueError):
             out["flags"] = []
+        if out.get("evaluation_report"):
+            try:
+                out["scorecard"] = json.loads(out["evaluation_report"])
+            except Exception:
+                pass
         return out
 
     def export_candidate(self, email) -> list:

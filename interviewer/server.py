@@ -49,9 +49,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .config import InterviewConfig
+from .documents import DocumentError, extract_document_text, validate_text_document
 from .engine import InterviewEngine
 from .integrity import IntegrityMonitor
-from .llm import build_llm
+from .llm import build_llm, LLMError
 from .streaming import (OP_CLOSE, OP_TEXT, _Buffered, build_streaming_asr,
                         is_websocket_request, read_frame, send_frame, server_handshake)
 from .store import Store
@@ -213,7 +214,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"candidate": email,
                                     "interviews": _store().export_candidate(email)})
         if path.startswith("/api/interviews/"):
-            iid = path.split("/")[3]
+            parts = path.split("/")
+            iid = parts[3]
+            sub = parts[4] if len(parts) > 4 else ""
+            if sub == "chunks":
+                chunks = _store().get_document_chunks(iid, doc_type=query.get("doc_type"))
+                cleaned = [{k: v for k, v in c.items() if k != "embedding"} for c in chunks]
+                return self._send(200, {"interview_id": iid, "chunks": cleaned, "count": len(cleaned)})
             detail = _store().get_interview(iid)
             return self._send(200, detail) if detail else self._send(404, {"error": "not found"})
         if path == "/api/export.csv":
@@ -248,6 +255,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._transcribe(payload)
             if path == "/api/speak":
                 return self._speak(payload)
+            if path == "/api/documents/parse":
+                return self._parse_document(payload)
+            if path == "/api/documents/validate-text":
+                return self._validate_text_document(payload)
 
             if path.startswith("/api/") and not self._dash_ok(query):
                 return self._send(401, {"error": "unauthorized"})
@@ -259,6 +270,14 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/interviews/"):
                 parts = path.split("/")
                 iid, action = parts[3], (parts[4] if len(parts) > 4 else "")
+                if action == "retrieve":
+                    from .rag import retrieve_evidence
+                    results = retrieve_evidence(
+                        _store(), iid, payload.get("query", ""),
+                        doc_type=payload.get("doc_type"),
+                        top_k=int(payload.get("top_k", 3)),
+                    )
+                    return self._send(200, {"interview_id": iid, "query": payload.get("query", ""), "results": results})
                 if action == "review":
                     return self._review(iid, payload)
                 if action == "delete":
@@ -285,8 +304,18 @@ class Handler(BaseHTTPRequestHandler):
         cfg.validate()
 
         sid = os.urandom(8).hex()
-        iid = _store().create_interview(vars(cfg), llm="")
-        engine = InterviewEngine(cfg, build_llm(mock=bool(payload.get("mock", False))), seed=iid)
+        st = _store()
+        iid = st.create_interview(vars(cfg), llm="")
+
+        # Phase 3: Index Resume & Job Description via RAG Vector Storage
+        if cfg.resume_text or cfg.job_description:
+            try:
+                from .rag import index_interview_documents
+                index_interview_documents(st, iid, resume_text=cfg.resume_text, job_description=cfg.job_description)
+            except Exception as exc:
+                _log("rag_indexing_error", interview=iid, error=str(exc))
+
+        engine = InterviewEngine(cfg, build_llm(mock=bool(payload.get("mock", False))), seed=iid, store=st, interview_id=iid, session_id=sid)
         monitor = IntegrityMonitor(enabled=cfg.proctoring)
         with _LOCK:
             _SESSIONS[sid] = {"engine": engine, "iid": iid, "persisted": 0,
@@ -311,7 +340,11 @@ class Handler(BaseHTTPRequestHandler):
         if elapsed < 6 and len(text.split()) > 40:
             sess["monitor"].record("fast", detail=round(elapsed, 1))
 
-        out = sess["engine"].respond(text)
+        try:
+            out = sess["engine"].respond(text)
+        except LLMError as err:
+            _log("llm_generation_error", session=payload.get("session_id"), interview_id=sess["iid"], error=str(err))
+            return self._send(502, {"error": f"Interview model error: {err}"})
         sess["prompt_at"] = time.time()
         self._persist_new_turns(payload["session_id"])
         if out.get("done"):
@@ -374,6 +407,43 @@ class Handler(BaseHTTPRequestHandler):
         audio = _voice().synthesize_stream(text, language_code=payload.get("language", "en-IN"),
                                            speaker=payload.get("speaker", "shubh"))
         return self._send(200, audio, "audio/wav")
+
+    # ---- document endpoints (Phase 2) -----------------------------------
+    def _parse_document(self, payload):
+        filename = payload.get("filename", "")
+        b64_content = payload.get("content_b64", "")
+        if not filename or not b64_content:
+            return self._send(400, {"error": "filename and content_b64 are required."})
+        try:
+            content = base64.b64decode(b64_content)
+            text, meta = extract_document_text(filename, content)
+            return self._send(200, {
+                "status": "ok",
+                "filename": meta["filename"],
+                "format": meta["format"],
+                "size_bytes": meta["size_bytes"],
+                "char_count": meta["char_count"],
+                "word_count": meta["word_count"],
+                "text": text,
+            })
+        except DocumentError as e:
+            return self._send(400, {"error": str(e)})
+        except Exception as e:
+            return self._send(500, {"error": str(e)})
+
+    def _validate_text_document(self, payload):
+        text = payload.get("text", "")
+        label = payload.get("label", "Job description")
+        try:
+            cleaned = validate_text_document(text, doc_label=label)
+            return self._send(200, {
+                "status": "ok",
+                "text": cleaned,
+                "char_count": len(cleaned),
+                "word_count": len(cleaned.split()),
+            })
+        except DocumentError as e:
+            return self._send(400, {"error": str(e)})
 
     # ---- reviewer endpoints ---------------------------------------------
     def _review(self, iid, payload):

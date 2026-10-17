@@ -13,7 +13,7 @@ import os
 import sys
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import (
     FastAPI,
@@ -22,18 +22,20 @@ from fastapi import (
     Query,
     Request,
     Response,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
 from .config import InterviewConfig
+from .documents import DocumentError, extract_document_text, validate_text_document
 from .engine import InterviewEngine
 from .integrity import IntegrityMonitor
-from .llm import build_llm
+from .llm import build_llm, LLMError
 from .store import Store
 from .streaming import build_streaming_asr
 from .voice import build_voice
@@ -46,6 +48,13 @@ _STORE: Optional[Store] = None
 _STORE_PATH: Optional[str] = None
 _VOICE = None
 _VOICE_MOCK: Optional[bool] = None
+
+
+def _log(event: str, **fields):
+    rec = {"t": round(time.time(), 3), "event": event}
+    rec.update(fields)
+    sys.stderr.write(json.dumps(rec) + "\n")
+    sys.stderr.flush()
 
 
 def get_store() -> Store:
@@ -113,6 +122,13 @@ class StartSessionRequest(BaseModel):
     consent: bool = False
     randomize_order: Optional[bool] = None
     proctoring: bool = True
+    resume_text: Optional[str] = ""
+    job_description: Optional[str] = ""
+
+
+class ValidateTextRequest(BaseModel):
+    text: str
+    label: Optional[str] = "Job description"
 
 
 class MessageRequest(BaseModel):
@@ -151,6 +167,12 @@ class ReviewRequest(BaseModel):
 
 class CandidateDeleteRequest(BaseModel):
     email: str
+
+
+class RagRetrieveRequest(BaseModel):
+    query: str
+    doc_type: Optional[str] = None
+    top_k: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +255,92 @@ async def get_health():
     }
 
 
+# ---------------------------------------------------------------------------
+# Document Processing Endpoints (Phase 2)
+# ---------------------------------------------------------------------------
+@app.post("/api/documents/parse", tags=["Documents"])
+async def parse_document(
+    request: Request,
+    file: Optional[UploadFile] = None,
+):
+    """Upload and extract text from a Resume or Job Description (PDF or DOCX).
+    Supports multipart/form-data with 'file', or JSON with 'filename' and 'content_b64'.
+    """
+    filename = ""
+    content = b""
+    content_type = request.headers.get("content-type", "")
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        uploaded = form.get("file")
+        if not uploaded or not hasattr(uploaded, "read"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No document file was uploaded. Please provide a file.",
+            )
+        filename = getattr(uploaded, "filename", "") or "document.pdf"
+        content = await uploaded.read()
+    elif "application/json" in content_type:
+        body = await request.json()
+        filename = body.get("filename", "document.pdf")
+        b64_data = body.get("content_b64", "")
+        if not b64_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing 'content_b64' in JSON payload.",
+            )
+        try:
+            content = base64.b64decode(b64_data)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid base64 encoding: {exc}",
+            )
+    else:
+        if file and file.filename:
+            filename = file.filename
+            content = await file.read()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported Content-Type. Please upload via multipart/form-data or application/json.",
+            )
+
+    try:
+        text, meta = extract_document_text(filename, content)
+        return {
+            "status": "ok",
+            "filename": meta["filename"],
+            "format": meta["format"],
+            "size_bytes": meta["size_bytes"],
+            "char_count": meta["char_count"],
+            "word_count": meta["word_count"],
+            "text": text,
+        }
+    except DocumentError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error parsing '{filename}': {exc}",
+        )
+
+
+@app.post("/api/documents/validate-text", tags=["Documents"])
+async def validate_document_text(req: ValidateTextRequest):
+    """Validate and clean plain text input for job descriptions."""
+    try:
+        cleaned = validate_text_document(req.text, doc_label=req.label or "Job description")
+        return {
+            "status": "ok",
+            "text": cleaned,
+            "char_count": len(cleaned),
+            "word_count": len(cleaned.split()),
+        }
+    except DocumentError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+
+
 @app.post("/api/start", tags=["Interview"])
 async def start_interview(req: StartSessionRequest):
     """Initializes a new interview session."""
@@ -250,8 +358,16 @@ async def start_interview(req: StartSessionRequest):
     store = get_store()
     iid = store.create_interview(vars(cfg), llm="")
 
+    # Phase 3: Index Resume & Job Description via RAG Vector Storage
+    if cfg.resume_text or cfg.job_description:
+        try:
+            from .rag import index_interview_documents
+            index_interview_documents(store, iid, resume_text=cfg.resume_text, job_description=cfg.job_description)
+        except Exception as exc:
+            _log("rag_indexing_error", interview_id=iid, error=str(exc))
+
     llm = build_llm(mock=req.mock)
-    engine = InterviewEngine(cfg, llm, seed=iid)
+    engine = InterviewEngine(cfg, llm, seed=iid, store=store, interview_id=iid, session_id=sid)
     monitor = IntegrityMonitor(enabled=cfg.proctoring)
 
     _SESSIONS[sid] = {
@@ -299,7 +415,14 @@ async def send_message(req: MessageRequest):
     if elapsed < 6 and len(text.split()) > 40:
         sess["monitor"].record("fast", detail=round(elapsed, 1))
 
-    out = sess["engine"].respond(text)
+    try:
+        out = sess["engine"].respond(text)
+    except LLMError as err:
+        _log("llm_generation_error", session_id=req.session_id, interview_id=sess["iid"], error=str(err))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Interview model error: {err}",
+        )
     sess["prompt_at"] = time.time()
 
     # Persist turns
@@ -493,6 +616,40 @@ async def delete_interview(
     check_dashboard_auth(token, authorization)
     get_store().delete_interview(interview_id)
     return {"deleted": interview_id}
+
+
+@app.get("/api/interviews/{interview_id}/chunks", tags=["RAG"])
+async def get_interview_chunks(
+    interview_id: str,
+    doc_type: Optional[str] = Query(None),
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Inspect stored document chunks and metadata for an interview session."""
+    check_dashboard_auth(token, authorization)
+    chunks = get_store().get_document_chunks(interview_id, doc_type=doc_type)
+    cleaned = []
+    for c in chunks:
+        c_copy = dict(c)
+        c_copy.pop("embedding", None)  # Omit large raw vector for clean display
+        cleaned.append(c_copy)
+    return {"interview_id": interview_id, "chunks": cleaned, "count": len(cleaned)}
+
+
+@app.post("/api/interviews/{interview_id}/retrieve", tags=["RAG"])
+async def retrieve_interview_chunks(
+    interview_id: str,
+    req: RagRetrieveRequest,
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Retrieve semantically similar evidence chunks for the current candidate session."""
+    check_dashboard_auth(token, authorization)
+    from .rag import retrieve_evidence
+    results = retrieve_evidence(
+        get_store(), interview_id, req.query, doc_type=req.doc_type, top_k=req.top_k
+    )
+    return {"interview_id": interview_id, "query": req.query, "results": results}
 
 
 @app.get("/api/candidate", tags=["Compliance"])

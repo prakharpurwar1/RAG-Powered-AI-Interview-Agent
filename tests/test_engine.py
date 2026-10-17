@@ -36,6 +36,7 @@ def test_thin_answer_triggers_followup():
     eng = InterviewEngine(cfg, MockLLM())
     eng.start()
     out = eng.respond("I don't know")          # thin -> follow-up
+    assert out["stage"] == eng.stage
     assert eng.turns[-1].kind == "followup"
 
 

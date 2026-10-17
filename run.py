@@ -13,6 +13,12 @@ import json
 import os
 import sys
 
+try:
+    import dotenv
+    dotenv.load_dotenv()
+except ImportError:
+    pass
+
 from interviewer.cli import run as run_cli
 
 

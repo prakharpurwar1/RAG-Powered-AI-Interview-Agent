@@ -720,7 +720,7 @@ function intPill(score) {
 }
 
 function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
 
 function fmtDate(t) {
@@ -737,7 +737,10 @@ async function openDrawer(id) {
   body.innerHTML = "";
 
   // Scorecard Section
-  if (r.competencies && r.competencies.length) {
+  const sc = r.scorecard || null;
+  const comps = (sc && sc.competencies) ? sc.competencies : r.competencies;
+
+  if (comps && comps.length) {
     const sec = document.createElement("div");
     sec.className = "drawer-section";
     sec.innerHTML = `
@@ -747,23 +750,104 @@ async function openDrawer(id) {
       </h3>
       <div style="margin-bottom:14px">${r.recommendation ? pill(r.recommendation, r.weighted_total) : ""}</div>
     `;
-    r.competencies.forEach((c) => {
-      const d = document.createElement("div");
-      d.innerHTML = `
-        <div class="comp-row">
-          <div><b>${esc(c.name)}</b> <small style="color:var(--muted)">(wt ${c.weight})</small></div>
-          <div class="bar"><span style="width:${(c.score/5)*100}%"></span></div>
-          <div style="text-align:right"><b>${c.score}</b></div>
+
+    if (sc && sc.scoring_methodology) {
+      const mb = document.createElement("div");
+      mb.style.background = "rgba(99, 102, 241, 0.08)";
+      mb.style.border = "1px solid rgba(99, 102, 241, 0.22)";
+      mb.style.borderRadius = "10px";
+      mb.style.padding = "10px 12px";
+      mb.style.fontSize = "12px";
+      mb.style.lineHeight = "1.5";
+      mb.style.color = "var(--text)";
+      mb.style.marginBottom = "14px";
+      mb.innerHTML = `<b>📐 Scoring Methodology:</b> ${esc(sc.scoring_methodology)}`;
+      sec.appendChild(mb);
+    }
+
+    if (sc && ((sc.key_strengths && sc.key_strengths.length) || (sc.priority_improvements && sc.priority_improvements.length))) {
+      const syn = document.createElement("div");
+      syn.style.display = "grid";
+      syn.style.gridTemplateColumns = "1fr 1fr";
+      syn.style.gap = "10px";
+      syn.style.marginBottom = "14px";
+      syn.innerHTML = `
+        <div style="background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:12px;">
+          <div style="font-size:11.5px; font-weight:700; color:var(--good); text-transform:uppercase; margin-bottom:6px;">✨ Key Strengths</div>
+          <ul style="margin:0 0 0 14px; padding:0; font-size:12px; line-height:1.5; color:var(--text);">
+            ${(sc.key_strengths || []).map(s => `<li>${esc(s)}</li>`).join("")}
+          </ul>
         </div>
-        ${c.comment ? `<p style="font-size:12px; color:var(--muted); margin:-6px 0 10px;">• ${esc(c.comment)}</p>` : ""}`;
+        <div style="background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:12px;">
+          <div style="font-size:11.5px; font-weight:700; color:var(--warn); text-transform:uppercase; margin-bottom:6px;">🎯 Priority Improvements</div>
+          <ul style="margin:0 0 0 14px; padding:0; font-size:12px; line-height:1.5; color:var(--muted);">
+            ${(sc.priority_improvements || []).map(p => `<li>${esc(p)}</li>`).join("")}
+          </ul>
+        </div>
+      `;
+      sec.appendChild(syn);
+    }
+
+    comps.forEach((c) => {
+      const d = document.createElement("div");
+      d.style.background = "var(--panel-2)";
+      d.style.border = "1px solid var(--line)";
+      d.style.borderRadius = "12px";
+      d.style.padding = "12px 14px";
+      d.style.marginBottom = "10px";
+
+      const isEval = c.status === "evaluated" && c.score != null;
+      const scoreText = isEval ? `${c.score} / 5.0` : (c.score != null ? `${c.score}` : "Unassessed");
+      const statusBadge = c.status_label ? `<span class="pill ${!isEval ? 'muted' : (c.score >= 4 ? 'good' : c.score >= 3 ? 'accent' : 'warn')}" style="font-size:10.5px; padding:2px 7px; margin-left:6px;">${esc(c.status_label)}</span>` : "";
+
+      let evHtml = "";
+      if (c.evidence && c.evidence.toLowerCase() !== "no evidence captured." && c.status === "evaluated") {
+        evHtml = `<div style="background:rgba(99,102,241,0.06); border-left:3px solid var(--accent); padding:6px 10px; border-radius:4px; font-size:11.5px; color:var(--text); margin-top:8px;">
+          <b>💬 Evidence:</b> <i>"${esc(c.evidence)}"</i>
+        </div>`;
+      }
+
+      let starHtml = "";
+      if (c.stronger_answer_example) {
+        starHtml = `
+          <details style="margin-top:8px; font-size:11.5px;">
+            <summary style="cursor:pointer; color:var(--accent); font-weight:600;">⭐ Example of a Stronger Answer (STAR)</summary>
+            <div style="background:var(--panel-input); border:1px solid var(--line); border-radius:6px; padding:8px 10px; margin-top:6px; line-height:1.45; white-space:pre-wrap; color:var(--text);">${esc(c.stronger_answer_example)}</div>
+          </details>`;
+      }
+
+      d.innerHTML = `
+        <div class="comp-row" style="margin-bottom:6px;">
+          <div><b>${esc(c.name)}</b> <small style="color:var(--muted)">(wt ${c.weight})</small> ${statusBadge}</div>
+          <div class="bar"><span style="width:${isEval ? (c.score/5)*100 : 0}%"></span></div>
+          <div style="text-align:right"><b>${scoreText}</b></div>
+        </div>
+        ${c.explanation || c.comment ? `<p style="font-size:12px; color:var(--muted); margin:4px 0 0; line-height:1.5;">${esc(c.explanation || c.comment)}</p>` : ""}
+        ${evHtml}
+        ${c.improvement_suggestion ? `<div style="font-size:11.5px; color:var(--text); margin-top:6px;"><b>💡 Tip:</b> ${esc(c.improvement_suggestion)}</div>` : ""}
+        ${starHtml}
+      `;
       sec.appendChild(d);
     });
+
+    if (sc && sc.recommended_practice_topics && sc.recommended_practice_topics.length) {
+      const tp = document.createElement("div");
+      tp.style.marginTop = "12px";
+      tp.innerHTML = `
+        <div style="font-size:11.5px; font-weight:600; text-transform:uppercase; color:var(--muted); margin-bottom:6px;">Recommended Practice Topics</div>
+        <div style="display:flex; flex-wrap:wrap; gap:6px;">
+          ${sc.recommended_practice_topics.map(t => `<span class="pill" style="font-size:11px; padding:3px 8px; background:var(--panel-input); color:var(--text);">📚 ${esc(t)}</span>`).join("")}
+        </div>
+      `;
+      sec.appendChild(tp);
+    }
+
     if (r.summary) {
       const p = document.createElement("p");
       p.style.color = "var(--text)";
-      p.style.fontSize = "13.5px";
+      p.style.fontSize = "13px";
       p.style.lineHeight = "1.6";
-      p.style.marginTop = "12px";
+      p.style.marginTop = "14px";
       p.style.background = "var(--panel-2)";
       p.style.padding = "12px 14px";
       p.style.borderRadius = "10px";
@@ -793,6 +877,59 @@ async function openDrawer(id) {
     body.appendChild(isec);
   }
 
+  // Candidate Background & Job Description (Phase 2 & Phase 3 RAG)
+  const docSec = document.createElement("div");
+  docSec.className = "drawer-section";
+  const ragStats = r.chunk_stats;
+  const ragBadge = (ragStats && ragStats.total > 0)
+    ? `<div style="display:inline-flex; align-items:center; gap:6px; background:rgba(34,197,94,0.12); border:1px solid rgba(34,197,94,0.28); border-radius:8px; padding:4px 10px; font-size:11.5px; color:var(--good); font-weight:600; margin-bottom:12px;">
+         <span>⚡ RAG Vector Index: <b>${ragStats.total}</b> Chunks Indexed (${ragStats.resume_chunks} Resume · ${ragStats.jd_chunks} JD)</span>
+       </div>`
+    : "";
+  docSec.innerHTML = `<h3>Candidate Background &amp; Target JD</h3>${ragBadge}`;
+  if (r.resume_text) {
+    const words = r.resume_text.trim().split(/\s+/).length;
+    const rCard = document.createElement("details");
+    rCard.open = true;
+    rCard.style.marginBottom = "10px";
+    rCard.style.fontSize = "13px";
+    rCard.innerHTML = `
+      <summary style="cursor:pointer; font-weight:600; color:var(--accent); margin-bottom:6px;">
+        📄 Verified Resume (${words} words)
+      </summary>
+      <div style="background:var(--panel-2); padding:10px 12px; border-radius:8px; white-space:pre-wrap; font-size:12px; max-height:160px; overflow-y:auto; line-height:1.5; color:var(--text);">${esc(r.resume_text)}</div>
+    `;
+    docSec.appendChild(rCard);
+  } else {
+    const noR = document.createElement("p");
+    noR.style.fontSize = "12.5px";
+    noR.style.color = "var(--muted)";
+    noR.style.marginBottom = "8px";
+    noR.innerHTML = `📄 Resume: <i>No resume was uploaded for this historical session.</i>`;
+    docSec.appendChild(noR);
+  }
+
+  if (r.job_description) {
+    const jWords = r.job_description.trim().split(/\s+/).length;
+    const jCard = document.createElement("details");
+    jCard.open = true;
+    jCard.style.fontSize = "13px";
+    jCard.innerHTML = `
+      <summary style="cursor:pointer; font-weight:600; color:var(--accent); margin-bottom:6px;">
+        🎯 Target Job Description (${jWords} words)
+      </summary>
+      <div style="background:var(--panel-2); padding:10px 12px; border-radius:8px; white-space:pre-wrap; font-size:12px; max-height:160px; overflow-y:auto; line-height:1.5; color:var(--text);">${esc(r.job_description)}</div>
+    `;
+    docSec.appendChild(jCard);
+  } else {
+    const noJ = document.createElement("p");
+    noJ.style.fontSize = "12.5px";
+    noJ.style.color = "var(--muted)";
+    noJ.innerHTML = `🎯 Target JD: <i>Standard role profile used for this historical session.</i>`;
+    docSec.appendChild(noJ);
+  }
+  body.appendChild(docSec);
+
   // Compliance
   const csec = document.createElement("div");
   csec.className = "drawer-section";
@@ -804,17 +941,44 @@ async function openDrawer(id) {
     </p>`;
   body.appendChild(csec);
 
-  // Transcript
+  // Transcript with RAG Evidence
   const tsec = document.createElement("div");
   tsec.className = "drawer-section";
   tsec.innerHTML = "<h3>Conversation Transcript</h3>";
   (r.turns || []).forEach((t) => {
     const el = document.createElement("div");
     el.className = "turn-card";
-    const whoLabel = t.role === "interviewer" ? "AI" : "Candidate";
+    const whoLabel = t.role === "interviewer"
+      ? (t.kind === "followup" ? "AI (Follow-up)" : "AI Interviewer")
+      : "Candidate";
+    let evHtml = "";
+    if (t.evidence && Array.isArray(t.evidence) && t.evidence.length > 0) {
+      evHtml = `
+        <details class="evidence-box" style="margin-top:10px; font-size:12px; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.22); border-radius:8px; padding:8px 10px;">
+          <summary style="cursor:pointer; font-weight:600; color:var(--accent); display:flex; align-items:center; justify-content:space-between;">
+            <span>🔍 Grounded Evidence (${t.evidence.length} RAG source${t.evidence.length > 1 ? "s" : ""})</span>
+            <span style="font-size:10.5px; opacity:0.8; font-weight:normal;">Click to inspect retrieved context ▾</span>
+          </summary>
+          <div style="margin-top:8px; display:flex; flex-direction:column; gap:6px;">
+            ${t.evidence.map((ev) => `
+              <div style="background:var(--panel-2); border-radius:6px; padding:6px 10px; border-left:3px solid var(--accent); line-height:1.45;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:600; font-size:11.5px;">
+                  <span>${ev.doc_type === "resume" ? "📄 Resume" : "🎯 Job Description"} · Section: ${esc(ev.section || "General")}</span>
+                  <span style="color:var(--accent);">${ev.score ? Math.round(ev.score * 100) + "% match" : ""}</span>
+                </div>
+                <div style="color:var(--text); font-size:11px; white-space:pre-wrap; opacity:0.9;">${esc(ev.text)}</div>
+              </div>
+            `).join("")}
+          </div>
+        </details>
+      `;
+    }
     el.innerHTML = `
       <div class="turn-who">${whoLabel}</div>
-      <div class="turn-txt">${esc(t.text)}</div>`;
+      <div class="turn-body" style="flex:1; display:flex; flex-direction:column; gap:8px; min-width:0;">
+        <div class="turn-txt">${esc(t.text)}</div>
+        ${evHtml}
+      </div>`;
     tsec.appendChild(el);
   });
   if (!(r.turns || []).length) {
