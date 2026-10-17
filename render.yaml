@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: ai-interview-bot
+    name: rag-interview-agent
     env: python
     region: oregon
     plan: free
