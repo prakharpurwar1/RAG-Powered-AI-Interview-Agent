@@ -27,11 +27,14 @@ def test_frame_large_payload():
     payload = b"x" * 70000                     # forces the 64-bit length path
     a, b = socket.socketpair()
     try:
-        b.sendall(S.encode_frame(payload, S.OP_BIN, mask=True))
+        t = threading.Thread(target=b.sendall, args=(S.encode_frame(payload, S.OP_BIN, mask=True),))
+        t.start()
         op, data, _ = S.read_frame(S._Buffered(a))
+        t.join()
         assert data == payload
     finally:
         a.close(); b.close()
+
 
 
 def test_accept_key_known_vector():

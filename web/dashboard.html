@@ -631,10 +631,26 @@ function updateThemeUI(theme) {
 $("themeToggle").onclick = toggleTheme;
 initTheme();
 
+const urlParams = new URLSearchParams(window.location.search);
+const tokenParam = urlParams.get("token");
+if (tokenParam) {
+  try { localStorage.setItem("dashboard_token", tokenParam); } catch (e) {}
+}
+
+function authHeaders(extra = {}) {
+  let token = null;
+  try { token = localStorage.getItem("dashboard_token"); } catch (e) {}
+  const headers = { ...extra };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 async function load() {
   const st = $("statusFilter").value, sort = $("sortBy").value;
   try {
-    const stats = await (await fetch("/api/stats")).json();
+    const stats = await (await fetch("/api/stats", { headers: authHeaders() })).json();
     $("stats").innerHTML = `
       ${statCard("📊", stats.total, "Total Interviews")}
       ${statCard("✅", stats.completed, "Completed Sessions")}
@@ -644,13 +660,14 @@ async function load() {
   } catch (e) {}
 
   try {
-    const data = await (await fetch(`/api/interviews?status=${st}&sort=${sort}`)).json();
+    const data = await (await fetch(`/api/interviews?status=${st}&sort=${sort}`, { headers: authHeaders() })).json();
     allInterviews = data.interviews || [];
     renderRows();
   } catch (e) {
     $("rows").innerHTML = `<tr><td colspan="9" class="empty-state">Error loading interviews: ${esc(e.message)}</td></tr>`;
   }
 }
+
 
 function renderRows() {
   const query = ($("searchInput").value || "").toLowerCase().trim();
@@ -730,8 +747,9 @@ function fmtDate(t) {
 }
 
 async function openDrawer(id) {
-  const r = await (await fetch(`/api/interviews/${id}`)).json();
+  const r = await (await fetch(`/api/interviews/${id}`, { headers: authHeaders() })).json();
   $("dName").textContent = r.candidate_name || "Candidate Assessment";
+
   $("dSub").textContent = `${r.role || "Role"} · Seniority: ${(r.level || "mid").toUpperCase()} · ${fmtDate(r.created_at)}`;
   const body = $("dBody");
   body.innerHTML = "";
@@ -1023,7 +1041,7 @@ function closeDrawer() {
 async function saveReview(id) {
   await fetch(`/api/interviews/${id}/review`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       reviewer: $("rv").value,
       notes: $("rn").value,
@@ -1040,13 +1058,14 @@ async function deleteInterview(id) {
   if (!confirm("Delete this candidate record and transcript permanently?")) return;
   await fetch(`/api/interviews/${id}/delete`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: "{}"
   });
   toast("Record deleted");
   closeDrawer();
   load();
 }
+
 
 function toast(msg) {
   const t = $("toast");

@@ -1481,14 +1481,47 @@ function toggleSwitch(id) {
   if (id === "mode") el.dispatchEvent(new Event('change'));
 }
 
-// ---------- Capabilities ----------
 (async () => {
   try { caps = await (await fetch("/api/capabilities")).json(); } catch (e) { caps = null; }
   const serverVoice = caps && caps.voice && caps.voice.server_voice;
   $("voiceNote").textContent = serverVoice
     ? "✨ Sarvam AI Saaras (ASR) & Bulbul (TTS) ready for studio-quality voice interaction."
     : "⚡ Browser-native Speech Synthesis & Recognition active. Connect Sarvam/OpenAI for studio voice.";
+
+  // Check for active interview session recovery after browser refresh
+  let savedSid = null;
+  try { savedSid = sessionStorage.getItem("ai_interview_active_session"); } catch(e) {}
+  if (savedSid) {
+    try {
+      const r = await post("/api/session/resume", { session_id: savedSid });
+      if (r && r.resumed && !r.completed) {
+        sessionId = r.session_id;
+        proctoring = r.proctoring !== false;
+        $("roomRole").textContent = `${r.role || "Technical"} Interview`;
+        $("roomMeta").textContent = `Level: ${(r.level || "mid").toUpperCase()} · Mode: ${(r.interview_type || "mixed").toUpperCase()}`;
+        $("setupScreen").classList.add("hidden");
+        $("chatScreen").style.display = "flex";
+        $("reportScreen").style.display = "none";
+        $("log").innerHTML = "";
+        startTimer();
+        attachIntegrityListeners();
+        if (r.turns && r.turns.length > 0) {
+          for (const t of r.turns) {
+            addMsg(t.role === "candidate" ? "me" : "bot", t.text);
+          }
+        } else if (r.message) {
+          addMsg("bot", r.message);
+        }
+        setStatus("Active session resumed", false);
+      } else {
+        try { sessionStorage.removeItem("ai_interview_active_session"); } catch(err) {}
+      }
+    } catch (e) {
+      try { sessionStorage.removeItem("ai_interview_active_session"); } catch(err) {}
+    }
+  }
 })();
+
 
 $("mode").onchange = () => {
   const hiring = $("mode").value === "hiring";
@@ -1744,6 +1777,7 @@ $("startBtn").onclick = async () => {
   try {
     const r = await post("/api/start", body);
     sessionId = r.session_id;
+    try { sessionStorage.setItem("ai_interview_active_session", sessionId); } catch (e) {}
     proctoring = r.proctoring !== false;
 
     $("roomRole").textContent = `${roleVal} Interview`;
@@ -1763,6 +1797,7 @@ $("startBtn").onclick = async () => {
     $("startBtn").disabled = false;
   }
 };
+
 
 // ---------- Chat Execution ----------
 $("sendBtn").onclick = send;
@@ -1813,6 +1848,7 @@ async function showReport() {
   setStatus("Generating AI scorecard…", true);
   try {
     const rep = await post("/api/report", { session_id: sessionId });
+    try { sessionStorage.removeItem("ai_interview_active_session"); } catch (e) {}
     renderReport(rep);
     $("chatScreen").style.display = "none";
     $("reportScreen").style.display = "block";
@@ -1822,6 +1858,7 @@ async function showReport() {
     setStatus("");
   }
 }
+
 
 function renderReport(rep) {
   const sc = rep.scorecard || {};
@@ -2311,8 +2348,10 @@ let ws = null, audioCtx = null, micStream = null, procNode = null;
 $("liveBtn").onclick = async () => {
   if (ws) { stopLive(); return; }
   try {
-    ws = new WebSocket(`ws://${location.host}/api/stream-asr`);
+    const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${wsProto}//${location.host}/api/stream-asr`);
     ws.onmessage = (ev) => {
+
       try {
         const m = JSON.parse(ev.data);
         if (m.event && m.event.includes("partial")) setStatus("Live: " + (m.text || ""), true);

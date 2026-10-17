@@ -398,15 +398,128 @@ class InterviewEngine:
             }
 
     def report(self) -> dict:
-        if self._report_cache is None:
-            card = build_scorecard(self.llm, self.rubric, self.turns, self.config)
-            self._report_cache = {
-                "config": asdict(self.config),
-                "transcript": [asdict(t) for t in self.turns],
-                "scorecard": card.to_dict(),
-                "candidate_name": self.config.candidate_name,
-                "role": self.config.role,
-                "level": self.config.level,
-            }
+        if self._report_cache is not None:
+            return self._report_cache
+
+        # Check if report already exists in store to prevent duplicate LLM calls
+        if self.store is not None and self.interview_id:
+            row = self.store.get_interview(self.interview_id)
+            if row and row.get("evaluation_report"):
+                try:
+                    sc = json.loads(row["evaluation_report"])
+                    self._report_cache = {
+                        "config": asdict(self.config),
+                        "transcript": [asdict(t) for t in self.turns],
+                        "scorecard": sc,
+                        "candidate_name": self.config.candidate_name,
+                        "role": self.config.role,
+                        "level": self.config.level,
+                    }
+                    return self._report_cache
+                except Exception:
+                    pass
+
+        card = build_scorecard(self.llm, self.rubric, self.turns, self.config)
+        self._report_cache = {
+            "config": asdict(self.config),
+            "transcript": [asdict(t) for t in self.turns],
+            "scorecard": card.to_dict(),
+            "candidate_name": self.config.candidate_name,
+            "role": self.config.role,
+            "level": self.config.level,
+        }
         return self._report_cache
+
+    @classmethod
+    def rehydrate_from_store(
+        cls,
+        store: Any,
+        interview_id: str,
+        session_id: Optional[str] = None,
+        llm: Optional[LLMClient] = None,
+    ) -> Optional["InterviewEngine"]:
+        """Reconstruct InterviewEngine state fully from persisted SQLite records."""
+        row = store.get_interview(interview_id)
+        if not row:
+            return None
+
+        cfg = InterviewConfig(
+            mode=row.get("mode") or "practice",
+            interview_type=row.get("interview_type") or "mixed",
+            role=row.get("role") or "Software Engineer",
+            level=row.get("level") or "mid",
+            candidate_name=row.get("candidate_name") or "Candidate",
+            candidate_email=row.get("candidate_email") or "",
+            company=row.get("company") or "Acme Corp",
+            language=row.get("language") or "en-IN",
+            consent=bool(row.get("consent")),
+            consent_version=row.get("consent_version") or "1.0",
+            resume_text=row.get("resume_text") or "",
+            job_description=row.get("job_description") or "",
+        )
+
+        if llm is None:
+            from .llm import build_llm
+            llm = build_llm(mock=True if row.get("llm") == "MockLLM" else False)
+
+        engine = cls(
+            config=cfg,
+            llm=llm,
+            seed=interview_id,
+            store=store,
+            interview_id=interview_id,
+            session_id=session_id or row.get("session_id") or interview_id,
+        )
+
+        # Restore turns
+        engine.turns = []
+        for t in row.get("turns", []):
+            engine.turns.append(
+                Turn(
+                    role=t.get("role", "interviewer"),
+                    text=t.get("text", ""),
+                    stage=t.get("stage", "core"),
+                    question_id=t.get("question_id"),
+                    kind=t.get("kind", "message"),
+                    evidence=t.get("evidence"),
+                )
+            )
+
+        # Reconstruct engine state from turns and status
+        if row.get("status") == "completed":
+            engine.finished = True
+            engine.stage = "done"
+        elif engine.turns:
+            last_turn = engine.turns[-1]
+            engine.stage = last_turn.stage or "core"
+            if engine.stage == "core":
+                questions_count = sum(1 for t in engine.turns if t.role == "interviewer" and t.kind == "message")
+                engine.questions_asked = max(1, questions_count)
+                engine.q_index = engine.questions_asked - 1
+                followup_count = sum(1 for t in engine.turns if t.role == "interviewer" and t.kind == "followup")
+                engine.followups_used = followup_count
+
+        # Restore cached report if already scored
+        if row.get("evaluation_report"):
+            try:
+                engine._report_cache = {
+                    "config": asdict(engine.config),
+                    "transcript": [asdict(t) for t in engine.turns],
+                    "scorecard": json.loads(row["evaluation_report"]),
+                    "candidate_name": engine.config.candidate_name,
+                    "role": engine.config.role,
+                    "level": engine.config.level,
+                }
+            except Exception:
+                pass
+
+        return engine
+
+    def update_documents(self, resume_text: Optional[str] = None, job_description: Optional[str] = None):
+        """Update active document context in memory."""
+        if resume_text is not None:
+            self.config.resume_text = resume_text
+        if job_description is not None:
+            self.config.job_description = job_description
+
 

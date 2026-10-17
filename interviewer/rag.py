@@ -277,52 +277,79 @@ class EmbeddingService:
 def index_interview_documents(
     store: Any,
     interview_id: str,
-    resume_text: str = "",
-    job_description: str = "",
+    resume_text: Optional[str] = None,
+    job_description: Optional[str] = None,
+    doc_type: Optional[str] = None,
     embedding_service: Optional[EmbeddingService] = None,
 ) -> Dict[str, Any]:
     """Chunk, embed, and store document chunks in SQLite for an interview session.
 
-    Handles updates idempotently: replaces previous chunks for the session.
+    Supports selective re-indexing:
+    - If doc_type is specified ('resume' or 'job_description'), only that document type is replaced.
+    - If empty string is supplied, chunks for that document type are cleanly deleted.
+    - If both are supplied, both are re-indexed.
     """
     if not interview_id:
         return {"error": "interview_id required", "total_indexed": 0}
 
     svc = embedding_service or EmbeddingService.get_instance()
 
-    resume_chunks = chunk_document(resume_text, "resume", interview_id=interview_id)
-    jd_chunks = chunk_document(job_description, "job_description", interview_id=interview_id)
-    all_chunks = resume_chunks + jd_chunks
+    # Determine which document types are being indexed/updated
+    update_resume = (doc_type == "resume") or (doc_type is None and resume_text is not None)
+    update_jd = (doc_type == "job_description") or (doc_type is None and job_description is not None)
 
-    if not all_chunks:
-        # Clear out any previous chunks if both are now empty
-        store.delete_document_chunks(interview_id)
-        return {"resume_chunks": 0, "jd_chunks": 0, "total_indexed": 0}
+    resume_chunks = []
+    if update_resume:
+        resume_str = resume_text or ""
+        resume_chunks = chunk_document(resume_str, "resume", interview_id=interview_id)
 
-    # Batch embed texts for maximum throughput
-    texts = [c.text for c in all_chunks]
-    try:
-        vectors = svc.embed_texts(texts)
-        for chunk, vec in zip(all_chunks, vectors):
-            chunk.embedding = vec
-    except Exception as exc:
-        sys.stderr.write(f"[RAG] Failed to generate embeddings: {exc}\n")
-        # Ensure non-null fallback embeddings
-        fallback_vecs = DeterministicNgramEmbedder().embed(texts)
-        for chunk, vec in zip(all_chunks, fallback_vecs):
-            chunk.embedding = vec
+    jd_chunks = []
+    if update_jd:
+        jd_str = job_description or ""
+        jd_chunks = chunk_document(jd_str, "job_description", interview_id=interview_id)
 
-    # Store in database
-    store.save_document_chunks(interview_id, all_chunks)
+    # Process and embed resume chunks
+    if update_resume:
+        if resume_chunks:
+            texts = [c.text for c in resume_chunks]
+            try:
+                vectors = svc.embed_texts(texts)
+                for chunk, vec in zip(resume_chunks, vectors):
+                    chunk.embedding = vec
+            except Exception as exc:
+                sys.stderr.write(f"[RAG] Failed to embed resume: {exc}\n")
+                for chunk, vec in zip(resume_chunks, DeterministicNgramEmbedder().embed(texts)):
+                    chunk.embedding = vec
+            store.save_document_chunks(interview_id, resume_chunks, doc_type="resume")
+        else:
+            store.delete_document_chunks(interview_id, doc_type="resume")
 
+    # Process and embed JD chunks
+    if update_jd:
+        if jd_chunks:
+            texts = [c.text for c in jd_chunks]
+            try:
+                vectors = svc.embed_texts(texts)
+                for chunk, vec in zip(jd_chunks, vectors):
+                    chunk.embedding = vec
+            except Exception as exc:
+                sys.stderr.write(f"[RAG] Failed to embed JD: {exc}\n")
+                for chunk, vec in zip(jd_chunks, DeterministicNgramEmbedder().embed(texts)):
+                    chunk.embedding = vec
+            store.save_document_chunks(interview_id, jd_chunks, doc_type="job_description")
+        else:
+            store.delete_document_chunks(interview_id, doc_type="job_description")
+
+    total_indexed = len(resume_chunks) + len(jd_chunks)
     return {
         "status": "ok",
         "interview_id": interview_id,
         "resume_chunks": len(resume_chunks),
         "jd_chunks": len(jd_chunks),
-        "total_indexed": len(all_chunks),
+        "total_indexed": total_indexed,
         "provider": svc.provider_name,
     }
+
 
 
 def retrieve_evidence(

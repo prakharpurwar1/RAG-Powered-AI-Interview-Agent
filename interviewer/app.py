@@ -88,6 +88,64 @@ def sweep_sessions():
         _SESSIONS.pop(sid, None)
 
 
+def evict_sessions(interview_id: str = "", email: str = ""):
+    """Evict in-memory sessions when an interview or candidate data is deleted."""
+    to_del = []
+    store = get_store()
+    for sid, s in _SESSIONS.items():
+        if interview_id and s.get("iid") == interview_id:
+            to_del.append(sid)
+        elif email:
+            row = store.get_interview(s.get("iid", ""))
+            if row and row.get("candidate_email") == email:
+                to_del.append(sid)
+    for sid in to_del:
+        _SESSIONS.pop(sid, None)
+
+
+def get_or_rehydrate_session(session_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve session from memory or gracefully rehydrate from SQLite store."""
+    sweep_sessions()
+    if not session_id:
+        return None
+
+    sess = _SESSIONS.get(session_id)
+    if sess:
+        return sess
+
+    # Attempt rehydration from SQLite store
+    store = get_store()
+    row = store.get_interview_by_session_id(session_id)
+    if not row:
+        return None
+
+    iid = row["id"]
+    engine = InterviewEngine.rehydrate_from_store(store, iid, session_id=session_id)
+    if not engine:
+        return None
+
+    monitor = IntegrityMonitor(enabled=bool(engine.config.proctoring))
+    if row.get("flags"):
+        for flag in row.get("flags", []):
+            kind = flag.get("kind")
+            cnt = int(flag.get("count", 1))
+            for _ in range(cnt):
+                monitor.record(kind)
+
+    sess = {
+        "engine": engine,
+        "iid": iid,
+        "persisted": len(engine.turns),
+        "monitor": monitor,
+        "created": row.get("created_at") or time.time(),
+        "last": time.time(),
+        "prompt_at": time.time(),
+    }
+    _SESSIONS[session_id] = sess
+    _log("session_rehydrated", session_id=session_id, interview_id=iid, turns=len(engine.turns))
+    return sess
+
+
 def check_dashboard_auth(
     token: Optional[str] = Query(None),
     authorization: Optional[str] = Header(None),
@@ -104,6 +162,7 @@ def check_dashboard_auth(
             detail="Unauthorized: invalid or missing dashboard token",
         )
     return True
+
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +234,18 @@ class RagRetrieveRequest(BaseModel):
     top_k: int = 3
 
 
+class ResumeSessionRequest(BaseModel):
+    session_id: str
+
+
+class UpdateDocumentsRequest(BaseModel):
+    session_id: Optional[str] = None
+    resume_text: Optional[str] = None
+    job_description: Optional[str] = None
+    doc_type: Optional[str] = None
+
+
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -244,6 +315,8 @@ async def get_capabilities():
 
 
 @app.get("/api/health", tags=["System"])
+@app.get("/health", include_in_schema=False)
+@app.get("/healthz", include_in_schema=False)
 async def get_health():
     """Healthcheck endpoint for monitoring uptime and active sessions."""
     sweep_sessions()
@@ -253,6 +326,7 @@ async def get_health():
         "sessions": len(_SESSIONS),
         "db": get_store().path,
     }
+
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +430,7 @@ async def start_interview(req: StartSessionRequest):
 
     sid = os.urandom(8).hex()
     store = get_store()
-    iid = store.create_interview(vars(cfg), llm="")
+    iid = store.create_interview(vars(cfg), llm="", session_id=sid)
 
     # Phase 3: Index Resume & Job Description via RAG Vector Storage
     if cfg.resume_text or cfg.job_description:
@@ -399,11 +473,102 @@ async def start_interview(req: StartSessionRequest):
     }
 
 
+@app.post("/api/session/resume", tags=["Interview"])
+@app.get("/api/session/{session_id}", tags=["Interview"])
+async def resume_session(
+    session_id: Optional[str] = None,
+    req: Optional[ResumeSessionRequest] = None,
+):
+    """Resume an active or completed interview session after browser refresh or server restart."""
+    sid = (req.session_id if req else None) or session_id or ""
+    sess = get_or_rehydrate_session(sid)
+    if not sess:
+        row = get_store().get_interview_by_session_id(sid)
+        if row:
+            return {
+                "status": "ok",
+                "resumed": True,
+                "session_id": sid,
+                "interview_id": row["id"],
+                "completed": row.get("status") == "completed",
+                "scorecard": row.get("scorecard"),
+                "turns": row.get("turns", []),
+                "config": {
+                    "role": row.get("role"),
+                    "level": row.get("level"),
+                    "candidate_name": row.get("candidate_name"),
+                    "interview_type": row.get("interview_type"),
+                },
+            }
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+
+    engine = sess["engine"]
+    iid = sess["iid"]
+    last_turn = engine.turns[-1] if engine.turns else None
+    from dataclasses import asdict
+    return {
+        "status": "ok",
+        "resumed": True,
+        "session_id": sid,
+        "interview_id": iid,
+        "stage": engine.stage,
+        "completed": engine.finished or engine.stage == "done",
+        "message": last_turn.text if last_turn and last_turn.role == "interviewer" else "",
+        "turns": [asdict(t) for t in engine.turns],
+        "proctoring": engine.config.proctoring,
+        "candidate_name": engine.config.candidate_name,
+        "role": engine.config.role,
+        "level": engine.config.level,
+        "interview_type": engine.config.interview_type,
+    }
+
+
+@app.post("/api/session/{session_id}/documents", tags=["Interview"])
+async def update_session_documents(session_id: str, req: UpdateDocumentsRequest):
+    """Replace or remove uploaded resume/job description for an active session."""
+    sess = get_or_rehydrate_session(session_id)
+    store = get_store()
+    iid = sess["iid"] if sess else None
+    if not iid:
+        row = store.get_interview_by_session_id(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        iid = row["id"]
+
+    from .rag import index_interview_documents
+
+    store.update_interview_documents(
+        iid,
+        resume_text=req.resume_text,
+        job_description=req.job_description,
+    )
+
+    idx_res = index_interview_documents(
+        store,
+        iid,
+        resume_text=req.resume_text,
+        job_description=req.job_description,
+        doc_type=req.doc_type,
+    )
+
+    if sess and sess.get("engine"):
+        sess["engine"].update_documents(
+            resume_text=req.resume_text,
+            job_description=req.job_description,
+        )
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "interview_id": iid,
+        "indexing": idx_res,
+    }
+
+
 @app.post("/api/message", tags=["Interview"])
 async def send_message(req: MessageRequest):
     """Processes candidate's response turn and returns the interviewer's next question."""
-    sweep_sessions()
-    sess = _SESSIONS.get(req.session_id)
+    sess = get_or_rehydrate_session(req.session_id)
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found or expired")
 
@@ -445,13 +610,35 @@ async def send_message(req: MessageRequest):
 
 @app.post("/api/report", tags=["Interview"])
 async def generate_report(req: ReportRequest):
-    """Generates and finalizes the candidate scorecard and evaluation report."""
-    sess = _SESSIONS.get(req.session_id)
+    """Generates and finalizes the candidate scorecard and evaluation report idempotently."""
+    sess = get_or_rehydrate_session(req.session_id)
+    store = get_store()
+
     if not sess:
+        # Check if completed in store
+        row = store.get_interview_by_session_id(req.session_id)
+        if row and row.get("scorecard"):
+            return {
+                "scorecard": row["scorecard"],
+                "interview_id": row["id"],
+                "candidate_name": row.get("candidate_name", ""),
+                "role": row.get("role", ""),
+                "level": row.get("level", ""),
+            }
         raise HTTPException(status_code=404, detail="Session not found or expired")
 
+    # If already scored in SQLite, return cached scorecard directly
+    row = store.get_interview(sess["iid"])
+    if row and row.get("scorecard"):
+        return {
+            "scorecard": row["scorecard"],
+            "interview_id": sess["iid"],
+            "candidate_name": row.get("candidate_name", ""),
+            "role": row.get("role", ""),
+            "level": row.get("level", ""),
+        }
+
     rep = sess["engine"].report()
-    store = get_store()
     store.save_scorecard(sess["iid"], rep["scorecard"])
     integrity_summary = sess["monitor"].summary()
     store.save_integrity(sess["iid"], integrity_summary)
@@ -462,13 +649,14 @@ async def generate_report(req: ReportRequest):
 @app.post("/api/signal", tags=["Interview"])
 async def record_signal(req: SignalRequest):
     """Records proctoring telemetry signals (blur, copy, paste)."""
-    sess = _SESSIONS.get(req.session_id)
+    sess = get_or_rehydrate_session(req.session_id)
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
     sess["last"] = time.time()
     sess["monitor"].record(req.kind, detail=req.detail)
     return {"ok": True, "score": sess["monitor"].score()}
+
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +803,7 @@ async def delete_interview(
 ):
     check_dashboard_auth(token, authorization)
     get_store().delete_interview(interview_id)
+    evict_sessions(interview_id=interview_id)
     return {"deleted": interview_id}
 
 
@@ -669,8 +858,10 @@ async def delete_candidate_data(
     authorization: Optional[str] = Header(None),
 ):
     check_dashboard_auth(token, authorization)
+    evict_sessions(email=req.email)
     n = get_store().delete_candidate(req.email)
     return {"deleted": n}
+
 
 
 @app.get("/api/export.csv", tags=["Export"])

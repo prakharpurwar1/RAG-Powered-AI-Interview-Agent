@@ -23,6 +23,7 @@ import uuid
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS interviews (
     id TEXT PRIMARY KEY,
+    session_id TEXT,
     created_at REAL, updated_at REAL,
     status TEXT,
     mode TEXT, interview_type TEXT, role TEXT, level TEXT,
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turns_interview ON turns(interview_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_unique_idx ON turns(interview_id, idx);
 CREATE INDEX IF NOT EXISTS idx_comp_interview ON competencies(interview_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_interview ON document_chunks(interview_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_doc_type ON document_chunks(interview_id, doc_type);
@@ -71,6 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_email ON interviews(candidate_email);
 
 # columns added after the first release — migrated in place on open
 _NEW_COLUMNS = {
+    "session_id": "TEXT",
     "consent_at": "REAL", "consent_version": "TEXT", "retention_until": "REAL",
     "integrity_score": "REAL", "flags": "TEXT", "proctor_events": "INTEGER DEFAULT 0",
     "resume_text": "TEXT", "job_description": "TEXT",
@@ -82,8 +85,14 @@ class Store:
     def __init__(self, path="interviews.db"):
         self.path = path
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
         self._conn.row_factory = sqlite3.Row
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL;")
+            self._conn.execute("PRAGMA busy_timeout=10000;")
+            self._conn.execute("PRAGMA synchronous=NORMAL;")
+        except Exception:
+            pass
         self._conn.executescript(SCHEMA)
         self._migrate()
         self._conn.commit()
@@ -98,10 +107,15 @@ class Store:
         if "evidence" not in turn_cols:
             self._conn.execute("ALTER TABLE turns ADD COLUMN evidence TEXT")
 
+        # Ensure index creation after all columns are confirmed
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_interviews_session ON interviews(session_id)")
+        self._conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_unique_idx ON turns(interview_id, idx)")
+
         self._conn.commit()
 
+
     # -- writes -----------------------------------------------------------
-    def create_interview(self, config: dict, llm: str = "") -> str:
+    def create_interview(self, config: dict, llm: str = "", session_id: str = "") -> str:
         iid = uuid.uuid4().hex[:12]
         now = time.time()
         consent = int(bool(config.get("consent")))
@@ -109,12 +123,12 @@ class Store:
         with self._lock:
             self._conn.execute(
                 """INSERT INTO interviews
-                   (id, created_at, updated_at, status, mode, interview_type, role,
+                   (id, session_id, created_at, updated_at, status, mode, interview_type, role,
                     level, candidate_name, candidate_email, company, language,
                     consent, consent_at, consent_version, retention_until, llm,
                     review_status, proctor_events, resume_text, job_description)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (iid, now, now, "active", config.get("mode"), config.get("interview_type"),
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (iid, session_id or None, now, now, "active", config.get("mode"), config.get("interview_type"),
                  config.get("role"), config.get("level"), config.get("candidate_name"),
                  config.get("candidate_email"), config.get("company"),
                  config.get("language"), consent, now if consent else None,
@@ -131,13 +145,17 @@ class Store:
         with self._lock:
             self._conn.execute(
                 """INSERT INTO turns (interview_id, idx, role, text, stage, question_id, kind, evidence)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(interview_id, idx) DO UPDATE SET
+                       role=excluded.role, text=excluded.text, stage=excluded.stage,
+                       question_id=excluded.question_id, kind=excluded.kind, evidence=excluded.evidence""",
                 (interview_id, idx, turn.get("role"), turn.get("text"), turn.get("stage"),
                  turn.get("question_id"), turn.get("kind"), ev_str),
             )
             self._conn.execute("UPDATE interviews SET updated_at=? WHERE id=?",
                                (time.time(), interview_id))
             self._conn.commit()
+
 
     def save_scorecard(self, interview_id, scorecard: dict):
         report_json = json.dumps(scorecard)
@@ -229,10 +247,72 @@ class Store:
             result.append(d)
         return result
 
-    def delete_document_chunks(self, interview_id: str):
+    def delete_document_chunks(self, interview_id: str, doc_type: str | None = None):
         with self._lock:
-            self._conn.execute("DELETE FROM document_chunks WHERE interview_id=?", (interview_id,))
+            if doc_type:
+                self._conn.execute(
+                    "DELETE FROM document_chunks WHERE interview_id=? AND doc_type=?",
+                    (interview_id, doc_type),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM document_chunks WHERE interview_id=?",
+                    (interview_id,),
+                )
             self._conn.commit()
+
+    def update_interview_documents(
+        self,
+        interview_id: str,
+        resume_text: str | None = None,
+        job_description: str | None = None,
+    ) -> bool:
+        """Update resume_text and/or job_description in interviews table and refresh timestamps."""
+        updates = []
+        params = []
+        if resume_text is not None:
+            updates.append("resume_text=?")
+            params.append(resume_text)
+        if job_description is not None:
+            updates.append("job_description=?")
+            params.append(job_description)
+
+        if not updates:
+            return False
+
+        updates.append("updated_at=?")
+        params.append(time.time())
+        params.append(interview_id)
+
+        sql = f"UPDATE interviews SET {', '.join(updates)} WHERE id=?"
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def update_interview_status(self, interview_id: str, status: str) -> bool:
+        """Update session status (e.g., active, completed, interrupted)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE interviews SET status=?, updated_at=? WHERE id=?",
+                (status, time.time(), interview_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def get_interview_by_session_id(self, session_id: str) -> dict | None:
+        """Fetch full interview details by session_id."""
+        if not session_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM interviews WHERE session_id=? OR id=?",
+                (session_id, session_id),
+            ).fetchone()
+        if not row:
+            return None
+        return self.get_interview(row["id"])
+
 
     def delete_interview(self, interview_id):
         with self._lock:

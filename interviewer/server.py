@@ -194,11 +194,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"voice": _voice().capabilities(),
                                     "llm": build_llm().name,
                                     "proctoring": True})
-        if path == "/api/health":
+        if path in ("/api/health", "/health", "/healthz"):
             with _LOCK:
                 n = len(_SESSIONS)
             return self._send(200, {"status": "ok", "uptime_s": round(time.time() - STARTED_AT, 1),
                                     "sessions": n, "db": _store().path})
+
 
         if path.startswith("/api/") and not self._dash_ok(query):
             return self._send(401, {"error": "unauthorized"})
