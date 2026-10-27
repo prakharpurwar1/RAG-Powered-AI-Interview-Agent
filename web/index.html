@@ -221,24 +221,40 @@
 
   .grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 20px;
+    width: 100%;
+    align-items: start;
+    box-sizing: border-box;
   }
   .full { grid-column: 1 / -1; }
 
   .form-group {
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    width: 100%;
+    position: relative;
+    box-sizing: border-box;
   }
   label {
     font-size: 12px;
     font-weight: 600;
     color: var(--muted);
     margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    text-align: left;
+    box-sizing: border-box;
   }
 
   select, input[type="text"] {
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     padding: 11px 14px;
     border-radius: 12px;
     background: var(--panel-input);
@@ -247,11 +263,59 @@
     font-size: 14px;
     font-family: inherit;
     outline: none;
-    transition: all 0.2s ease;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  }
+  select {
+    cursor: pointer;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: calc(100% - 18px) center;
+    background-size: 16px 16px;
+    padding-right: 48px;
+  }
+  select:focus {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  }
+  :root[data-theme="light"] select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  }
+  :root[data-theme="light"] select:focus {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
   }
   select:focus, input[type="text"]:focus, textarea:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+  select.placeholder-selected {
+    color: var(--muted);
+  }
+  select.is-invalid, input[type="text"].is-invalid, textarea.is-invalid {
+    border-color: var(--bad) !important;
+    box-shadow: 0 0 0 3px var(--bad-bg) !important;
+  }
+  select.is-invalid:focus, input[type="text"].is-invalid:focus, textarea.is-invalid:focus {
+    border-color: var(--bad) !important;
+    box-shadow: 0 0 0 3px var(--bad-bg) !important;
+  }
+  .field-error-msg {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    color: var(--bad);
+    font-size: 11.5px;
+    font-weight: 500;
+    margin-top: 5px;
+    line-height: 1.35;
+  }
+  .consent-box.is-invalid {
+    border-color: var(--bad) !important;
+    box-shadow: 0 0 0 3px var(--bad-bg) !important;
   }
 
   /* Preset Chips */
@@ -276,6 +340,12 @@
     color: var(--text);
     border-color: var(--accent);
     background: var(--panel-hover);
+  }
+  .chip.active {
+    color: #fff;
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
   }
 
   /* Toggle Switches */
@@ -380,12 +450,13 @@
   /* Document Upload Section (Phase 2) */
   .doc-section {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 20px;
+    width: 100%;
     margin-top: 6px;
     margin-bottom: 8px;
   }
-  @media (max-width: 680px) {
+  @media (max-width: 768px) {
     .doc-section { grid-template-columns: 1fr; }
   }
   .doc-card {
@@ -395,6 +466,7 @@
     padding: 16px;
     display: flex;
     flex-direction: column;
+    min-width: 0;
     gap: 10px;
     transition: all 0.2s ease;
   }
@@ -1102,8 +1174,9 @@
 
   .hidden { display: none !important; }
 
-  @media (max-width: 680px) {
-    .grid { grid-template-columns: 1fr; }
+  @media (max-width: 768px) {
+    .grid { grid-template-columns: 1fr; gap: 14px; }
+    .doc-section { grid-template-columns: 1fr; gap: 14px; }
     .toggles-grid { grid-template-columns: 1fr; }
     header { flex-direction: column; align-items: flex-start; }
     .header-actions { margin-left: 0; width: 100%; justify-content: space-between; margin-top: 10px; }
@@ -1111,8 +1184,11 @@
 </style>
 </head>
 <body>
+  <div id="fileNotice" style="display:none;background:rgba(99,102,241,0.18);border-bottom:1px solid rgba(99,102,241,0.35);padding:10px 24px;text-align:center;font-size:13px;color:var(--text);">
+    ⚠️ <strong>Local file mode:</strong> You opened this file directly via <code>file://</code>. For full real-time API and voice features, open <a id="fileNoticeLink" href="http://localhost:8000/" style="color:var(--accent);font-weight:600;text-decoration:underline;margin-left:4px;">http://localhost:8000/</a>.
+  </div>
   <header>
-    <a href="/" class="brand">
+    <a href="/" id="brandLink" class="brand">
       <div class="logo-box">
         <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 14.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm1.7-6.2l-.8.8a2.1 2.1 0 0 0-.6 1.4h-2.6a3.9 3.9 0 0 1 1.1-2.6l1.2-1.2A1.8 1.8 0 0 0 12 5.5a1.8 1.8 0 0 0-1.8 1.8H7.6a4.4 4.4 0 0 1 4.4-4.4 4.4 4.4 0 0 1 4.4 4.4 3.7 3.7 0 0 1-1.7 3z"/></svg>
       </div>
@@ -1125,7 +1201,7 @@
       <button class="theme-toggle" id="themeToggle" title="Switch Theme">
         <span id="themeIcon">🌙</span> <span id="themeLabel">Dark</span>
       </button>
-      <a href="/dashboard" class="btn-link">
+      <a href="/dashboard" id="dashboardLink" class="btn-link">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
         Dashboard
       </a>
@@ -1147,66 +1223,78 @@
         <div class="form-group">
           <label for="mode">Purpose &amp; Tone</label>
           <select id="mode">
+            <option value="" disabled selected>Select purpose and tone</option>
             <option value="practice">🎯 Practice — Warm coaching with learning tips</option>
             <option value="hiring">💼 Hiring — Objective evaluation with rubric score</option>
           </select>
+          <div class="field-error-msg" id="err_mode"></div>
         </div>
 
         <div class="form-group">
           <label for="interview_type">Assessment Focus</label>
           <select id="interview_type">
+            <option value="" disabled selected>Select assessment focus</option>
             <option value="mixed">Mixed (Technical + Behavioral)</option>
             <option value="technical">Technical Deep-Dive &amp; System Design</option>
             <option value="behavioral">Behavioral, Culture &amp; Leadership</option>
           </select>
+          <div class="field-error-msg" id="err_interview_type"></div>
         </div>
 
         <div class="form-group full">
           <label for="role">Target Role</label>
-          <input id="role" type="text" value="Software Engineer" placeholder="e.g. Full Stack Engineer, Product Manager">
+          <input id="role" type="text" value="" placeholder="e.g. Full Stack Engineer, Product Manager">
+          <div class="field-error-msg" id="err_role"></div>
           <div class="chips-wrapper">
-            <span class="chip" onclick="setRole('Full Stack Engineer', 'mixed')">Full Stack</span>
-            <span class="chip" onclick="setRole('Frontend Engineer', 'technical')">Frontend</span>
-            <span class="chip" onclick="setRole('Backend Engineer', 'technical')">Backend</span>
-            <span class="chip" onclick="setRole('AI / ML Engineer', 'technical')">AI / ML</span>
-            <span class="chip" onclick="setRole('Product Manager', 'mixed')">Product Manager</span>
-            <span class="chip" onclick="setRole('System Design Lead', 'technical')">System Design</span>
-            <span class="chip" onclick="setRole('Engineering Manager', 'behavioral')">Eng Manager</span>
+            <span class="chip" onclick="setRole('Full Stack Engineer', this)">Full Stack</span>
+            <span class="chip" onclick="setRole('Frontend Engineer', this)">Frontend</span>
+            <span class="chip" onclick="setRole('Backend Engineer', this)">Backend</span>
+            <span class="chip" onclick="setRole('AI / ML Engineer', this)">AI / ML</span>
+            <span class="chip" onclick="setRole('Product Manager', this)">Product Manager</span>
+            <span class="chip" onclick="setRole('System Design Lead', this)">System Design</span>
+            <span class="chip" onclick="setRole('Engineering Manager', this)">Eng Manager</span>
           </div>
         </div>
 
         <div class="form-group">
           <label for="level">Seniority Level</label>
           <select id="level">
+            <option value="" disabled selected>Select seniority level</option>
             <option value="junior">Junior (0 - 2 yrs)</option>
-            <option value="mid" selected>Mid-Level (2 - 5 yrs)</option>
+            <option value="mid">Mid-Level (2 - 5 yrs)</option>
             <option value="senior">Senior (5+ yrs)</option>
           </select>
+          <div class="field-error-msg" id="err_level"></div>
         </div>
 
         <div class="form-group">
           <label for="max_questions">Question Count</label>
           <select id="max_questions">
+            <option value="" disabled selected>Select question count</option>
             <option value="4">4 Questions (Quick ~10 min)</option>
-            <option value="6" selected>6 Questions (Standard ~15 min)</option>
+            <option value="6">6 Questions (Standard ~15 min)</option>
             <option value="8">8 Questions (In-depth ~25 min)</option>
           </select>
+          <div class="field-error-msg" id="err_max_questions"></div>
         </div>
 
         <div class="form-group">
           <label for="candidate_name">Candidate Full Name</label>
-          <input id="candidate_name" type="text" value="Candidate" placeholder="Jane Doe">
+          <input id="candidate_name" type="text" value="" placeholder="Enter candidate full name">
+          <div class="field-error-msg" id="err_candidate_name"></div>
         </div>
 
         <div class="form-group">
           <label for="candidate_email">Candidate Email (Optional)</label>
-          <input id="candidate_email" type="text" value="" placeholder="candidate@example.com">
+          <input id="candidate_email" type="text" value="" placeholder="Enter candidate email (optional)">
+          <div class="field-error-msg" id="err_candidate_email"></div>
         </div>
 
         <div class="form-group full">
           <label for="language">Interview Language</label>
           <select id="language">
-            <option value="en-IN" selected>🇮🇳 English (India)</option>
+            <option value="" disabled selected>Select interview language</option>
+            <option value="en-IN">🇮🇳 English (India)</option>
             <option value="hi-IN">🇮🇳 Hindi (हिन्दी)</option>
             <option value="ta-IN">🇮🇳 Tamil (தமிழ்)</option>
             <option value="te-IN">🇮🇳 Telugu (తెలుగు)</option>
@@ -1214,6 +1302,7 @@
             <option value="mr-IN">🇮🇳 Marathi (मराठी)</option>
             <option value="kn-IN">🇮🇳 Kannada (ಕನ್ನಡ)</option>
           </select>
+          <div class="field-error-msg" id="err_language"></div>
         </div>
       </div>
 
@@ -1330,6 +1419,7 @@
         <label for="consent">
           <b>Informed Candidate Consent (Required for Screening):</b> I confirm the candidate has agreed to be recorded, proctored, and evaluated under Consent Policy v1.0.
         </label>
+        <div class="field-error-msg" id="err_consent" style="margin-top:8px; padding-left:26px;"></div>
       </div>
 
       <button class="btn-primary" id="startBtn">
@@ -1439,7 +1529,7 @@
 
       <div class="report-actions">
         <button class="btn-primary" id="restartBtn">Start New Interview</button>
-        <button class="btn-outline" onclick="location.href='/dashboard'">Open Reviewer Dashboard ↗</button>
+        <button class="btn-outline" onclick="location.href=(window.API_BASE||'') + '/dashboard'">Open Reviewer Dashboard ↗</button>
       </div>
     </section>
   </main>
@@ -1470,10 +1560,242 @@ function updateThemeUI(theme) {
 $("themeToggle").onclick = toggleTheme;
 initTheme();
 
-function setRole(roleName, type) {
-  $("role").value = roleName;
-  $("interview_type").value = type;
+// ---------- Field Validation Logic ----------
+function setFieldError(fieldId, msg) {
+  const el = $(fieldId);
+  const errEl = $(`err_${fieldId}`);
+  if (el) el.classList.add("is-invalid");
+  if (errEl) {
+    errEl.textContent = msg;
+    errEl.style.display = "flex";
+  }
 }
+
+function clearFieldError(fieldId) {
+  const el = $(fieldId);
+  const errEl = $(`err_${fieldId}`);
+  if (el) el.classList.remove("is-invalid");
+  if (errEl) {
+    errEl.textContent = "";
+    errEl.style.display = "none";
+  }
+}
+
+function clearAllFieldErrors() {
+  const fields = [
+    "mode", "interview_type", "role", "level", "max_questions",
+    "candidate_name", "candidate_email", "language", "consent"
+  ];
+  fields.forEach(clearFieldError);
+}
+
+function updateSelectPlaceholderStyle(selectEl) {
+  if (!selectEl) return;
+  if (!selectEl.value) {
+    selectEl.classList.add("placeholder-selected");
+  } else {
+    selectEl.classList.remove("placeholder-selected");
+  }
+}
+
+function validateSingleField(id) {
+  const el = $(id);
+  if (!el) return true;
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  switch (id) {
+    case "mode":
+      if (!el.value) {
+        setFieldError(id, "Please select a purpose and tone.");
+        return false;
+      }
+      clearFieldError(id);
+      return true;
+    case "interview_type":
+      if (!el.value) {
+        setFieldError(id, "Please select an assessment focus.");
+        return false;
+      }
+      clearFieldError(id);
+      return true;
+    case "role":
+      if (!el.value.trim()) {
+        setFieldError(id, "Please enter a target role.");
+        return false;
+      }
+      clearFieldError(id);
+      return true;
+    case "level":
+      if (!el.value) {
+        setFieldError(id, "Please select a seniority level.");
+        return false;
+      }
+      clearFieldError(id);
+      return true;
+    case "max_questions":
+      if (!el.value || isNaN(parseInt(el.value, 10)) || parseInt(el.value, 10) <= 0) {
+        setFieldError(id, "Please select a question count.");
+        return false;
+      }
+      clearFieldError(id);
+      return true;
+    case "candidate_name":
+      if (!el.value.trim()) {
+        setFieldError(id, "Please enter candidate full name.");
+        return false;
+      }
+      clearFieldError(id);
+      return true;
+    case "candidate_email": {
+      const email = el.value.trim();
+      if (email && !emailRegex.test(email)) {
+        setFieldError(id, "Please enter a valid email address.");
+        return false;
+      }
+      clearFieldError(id);
+      return true;
+    }
+    case "language":
+      if (!el.value) {
+        setFieldError(id, "Please select an interview language.");
+        return false;
+      }
+      clearFieldError(id);
+      return true;
+    case "consent":
+      if ($("mode").value === "hiring" && !$("consent").checked) {
+        setFieldError(id, "Candidate consent is required for hiring mode.");
+        return false;
+      }
+      clearFieldError(id);
+      return true;
+    default:
+      return true;
+  }
+}
+
+function validateForm() {
+  clearAllFieldErrors();
+  let firstInvalidEl = null;
+  let isValid = true;
+
+  const check = (id, condition, msg) => {
+    if (!condition) {
+      setFieldError(id, msg);
+      isValid = false;
+      if (!firstInvalidEl) {
+        firstInvalidEl = $(id);
+      }
+    } else {
+      clearFieldError(id);
+    }
+  };
+
+  // 1. Purpose & Tone (Mandatory)
+  check("mode", !!$("mode").value, "Please select a purpose and tone.");
+
+  // 2. Assessment Focus (Mandatory)
+  check("interview_type", !!$("interview_type").value, "Please select an assessment focus.");
+
+  // 3. Target Role (Mandatory)
+  check("role", !!$("role").value.trim(), "Please enter a target role.");
+
+  // 4. Seniority Level (Mandatory)
+  check("level", !!$("level").value, "Please select a seniority level.");
+
+  // 5. Question Count (Mandatory)
+  check("max_questions", !!$("max_questions").value && !isNaN(parseInt($("max_questions").value, 10)) && parseInt($("max_questions").value, 10) > 0, "Please select a question count.");
+
+  // 6. Candidate Full Name (Mandatory)
+  check("candidate_name", !!$("candidate_name").value.trim(), "Please enter candidate full name.");
+
+  // 7. Candidate Email (Optional, but validated if filled)
+  const email = $("candidate_email").value.trim();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (email) {
+    check("candidate_email", emailRegex.test(email), "Please enter a valid email address.");
+  } else {
+    clearFieldError("candidate_email");
+  }
+
+  // 8. Interview Language (Mandatory)
+  check("language", !!$("language").value, "Please select an interview language.");
+
+  // 9. Candidate Consent (Required for hiring mode)
+  if ($("mode").value === "hiring") {
+    check("consent", $("consent").checked, "Candidate consent is required for hiring mode.");
+  } else {
+    clearFieldError("consent");
+  }
+
+  // Focus and scroll first invalid field into view
+  if (firstInvalidEl) {
+    try {
+      firstInvalidEl.focus();
+      firstInvalidEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch (e) {}
+  }
+
+  return isValid;
+}
+
+// Live watchers to clear field error styling as soon as user corrects it
+[
+  { id: "candidate_name", events: ["input", "change", "blur"] },
+  { id: "role", events: ["input", "change", "blur"] },
+  { id: "candidate_email", events: ["input", "change", "blur"] },
+  { id: "mode", events: ["change", "input"] },
+  { id: "interview_type", events: ["change", "input"] },
+  { id: "level", events: ["change", "input"] },
+  { id: "max_questions", events: ["change", "input"] },
+  { id: "language", events: ["change", "input"] },
+  { id: "consent", events: ["change", "input"] }
+].forEach(({ id, events }) => {
+  const el = $(id);
+  if (!el) return;
+  events.forEach(evt => {
+    el.addEventListener(evt, () => {
+      if (el.classList.contains("is-invalid") || $(`err_${id}`)?.textContent) {
+        validateSingleField(id);
+      }
+      if (el.tagName === "SELECT") {
+        updateSelectPlaceholderStyle(el);
+      }
+    });
+  });
+});
+
+function setRole(roleName, chipEl) {
+  $("role").value = roleName;
+  clearFieldError("role");
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
+  if (chipEl && chipEl.classList) {
+    chipEl.classList.add("active");
+  } else {
+    document.querySelectorAll(".chip").forEach(c => {
+      if (c.textContent.trim().toLowerCase() === roleName.toLowerCase()) {
+        c.classList.add("active");
+      }
+    });
+  }
+}
+
+$("role").addEventListener("input", () => {
+  const currentVal = $("role").value.trim().toLowerCase();
+  document.querySelectorAll(".chip").forEach(c => {
+    const chipText = c.textContent.trim().toLowerCase();
+    if (currentVal && chipText === currentVal) {
+      c.classList.add("active");
+    } else {
+      c.classList.remove("active");
+    }
+  });
+});
+
+// Initialize select placeholder styles
+["mode", "interview_type", "level", "max_questions", "language"].forEach(id => {
+  const el = $(id);
+  if (el) updateSelectPlaceholderStyle(el);
+});
 
 function toggleSwitch(id) {
   const el = $(id);
@@ -1481,8 +1803,20 @@ function toggleSwitch(id) {
   if (id === "mode") el.dispatchEvent(new Event('change'));
 }
 
+const API_BASE = (window.location.protocol === "file:" || window.location.port === "5500") ? "http://127.0.0.1:8000" : "";
+const apiUrl = (u) => (u.startsWith("http") ? u : `${API_BASE}${u}`);
+
+if (window.location.protocol === "file:") {
+  const notice = $("fileNotice");
+  if (notice) notice.style.display = "block";
+  const brand = $("brandLink");
+  if (brand) brand.href = "http://localhost:8000/";
+  const dLink = $("dashboardLink");
+  if (dLink) dLink.href = "http://localhost:8000/dashboard";
+}
+
 (async () => {
-  try { caps = await (await fetch("/api/capabilities")).json(); } catch (e) { caps = null; }
+  try { caps = await (await fetch(apiUrl("/api/capabilities"))).json(); } catch (e) { caps = null; }
   const serverVoice = caps && caps.voice && caps.voice.server_voice;
   $("voiceNote").textContent = serverVoice
     ? "✨ Sarvam AI Saaras (ASR) & Bulbul (TTS) ready for studio-quality voice interaction."
@@ -1527,6 +1861,13 @@ $("mode").onchange = () => {
   const hiring = $("mode").value === "hiring";
   $("consentRow").classList.toggle("hidden", !hiring);
   $("randomize").checked = hiring;
+  if (!hiring) {
+    clearFieldError("consent");
+  }
+  updateSelectPlaceholderStyle($("mode"));
+  if ($("mode").classList.contains("is-invalid") || $("err_mode")?.textContent) {
+    validateSingleField("mode");
+  }
 };
 
 // ---------- Timer ----------
@@ -1615,7 +1956,7 @@ async function uploadAndParseDocument(file, target) {
   try {
     const formData = new FormData();
     formData.append("file", file);
-    const resp = await fetch("/api/documents/parse", {
+    const resp = await fetch(apiUrl("/api/documents/parse"), {
       method: "POST",
       body: formData,
     });
@@ -1722,48 +2063,47 @@ setupDropZone("jdDropZone", "jdFileInput", "jd");
 // ---------- Start Interview ----------
 $("startBtn").onclick = async () => {
   hideSetupAlert();
-  ttsOn = $("ttsOn").checked;
-  const hiring = $("mode").value === "hiring";
-  if (hiring && !$("consent").checked) {
-    showSetupAlert("Candidate consent is required for hiring screening mode.");
+
+  // Validate all required form fields
+  if (!validateForm()) {
     return;
   }
 
-  // Phase 2: Resume & Job Description validation
+  // Resume & Job Description are strictly optional.
+  // If an uploaded document failed with an error, alert user to fix or clear it.
   if (resumeData.status === "error") {
-    showSetupAlert("The uploaded resume could not be processed. Please upload a readable PDF or DOCX file.");
+    showSetupAlert("The uploaded resume could not be processed. Please upload a readable PDF or DOCX file, or clear it.");
     return;
   }
   if (jdData.status === "error") {
-    showSetupAlert("The uploaded job description could not be processed. Please fix the file or paste the job description text.");
+    showSetupAlert("The uploaded job description could not be processed. Please fix the file or clear the job description.");
     return;
   }
+
+  ttsOn = $("ttsOn").checked;
+  const hiring = $("mode").value === "hiring";
 
   const resumeText = (resumeData.text || "").trim();
   const jdText = (currentJdMode === "paste" ? $("jdText").value : (jdData.text || $("jdText").value)).trim();
 
-  if (!resumeText) {
-    showSetupAlert("Please upload the candidate's resume (PDF or DOCX) so the AI interviewer can personalize the questions to their verified experience.");
-    return;
-  }
-  if (!jdText) {
-    showSetupAlert("Please provide a target job description (paste text or upload PDF/DOCX) so the interviewer can evaluate requirements.");
-    return;
-  }
-
-  const roleVal = $("role").value.trim() || "Software Engineer";
+  const roleVal = $("role").value.trim();
   const levelVal = $("level").value;
   const modeVal = $("mode").value;
+  const candName = $("candidate_name").value.trim();
+  const interviewTypeVal = $("interview_type").value;
+  const languageVal = $("language").value;
+  const maxQuestionsRaw = $("max_questions").value;
+  const maxQuestionsVal = maxQuestionsRaw ? parseInt(maxQuestionsRaw, 10) : null;
 
   const body = {
     mode: modeVal,
-    interview_type: $("interview_type").value,
+    interview_type: interviewTypeVal,
     role: roleVal,
     level: levelVal,
-    candidate_name: $("candidate_name").value.trim() || "Candidate",
+    candidate_name: candName,
     candidate_email: $("candidate_email").value.trim(),
-    language: $("language").value,
-    max_questions: parseInt($("max_questions").value, 10) || 6,
+    language: languageVal,
+    max_questions: maxQuestionsVal,
     mock: $("mock").checked,
     consent: $("consent").checked,
     randomize_order: $("randomize").checked,
@@ -1988,6 +2328,8 @@ function renderReport(rep) {
 
 $("restartBtn").onclick = () => {
   sessionId = null;
+  clearAllFieldErrors();
+  hideSetupAlert();
   $("reportScreen").style.display = "none";
   $("setupScreen").classList.remove("hidden");
   $("startBtn").disabled = false;
@@ -2029,7 +2371,7 @@ function showWave(show) {
 }
 
 async function post(url, body) {
-  const r = await fetch(url, {
+  const r = await fetch(apiUrl(url), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
@@ -2045,10 +2387,10 @@ function speak(text) {
   showWave(true);
   const serverVoice = caps && caps.voice && caps.voice.server_voice;
   if (serverVoice) {
-    fetch("/api/speak", {
+    fetch(apiUrl("/api/speak"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, language: $("language").value })
+      body: JSON.stringify({ text, language: $("language").value || "en-IN" })
     })
     .then((r) => r.ok ? r.blob() : null)
     .then((b) => {
@@ -2072,7 +2414,7 @@ function browserSpeak(text) {
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.rate = 1.0;
-  u.lang = $("language").value;
+  u.lang = $("language").value || "en-IN";
   u.onend = () => { showWave(false); stopBargeMonitor(); };
   u.onerror = () => { showWave(false); stopBargeMonitor(); };
   window.speechSynthesis.speak(u);
@@ -2131,7 +2473,7 @@ function stopPlayback() {
 // ---------- Proctoring & Integrity ----------
 function signal(kind, detail) {
   if (!sessionId || !proctoring) return;
-  fetch("/api/signal", {
+  fetch(apiUrl("/api/signal"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, kind, detail })
@@ -2208,7 +2550,7 @@ function startBrowserDictate() {
     browserRec = new SR();
     browserRec.continuous = true;
     browserRec.interimResults = true;
-    browserRec.lang = $("language").value;
+    browserRec.lang = $("language").value || "en-IN";
 
     browserRec.onstart = () => {
       $("micBtn").classList.add("rec");
@@ -2316,7 +2658,7 @@ async function toggleServerRecording() {
       const blob = new Blob(chunks, { type: recorder.mimeType });
       const b64 = await blobToB64(blob);
       try {
-        const r = await post("/api/transcribe", { audio_b64: b64, language: $("language").value });
+        const r = await post("/api/transcribe", { audio_b64: b64, language: $("language").value || "en-IN" });
         const existing = $("input").value.trim();
         $("input").value = existing ? existing + " " + (r.transcript || "").trim() : (r.transcript || "").trim();
         autoResizeInput();
@@ -2349,7 +2691,8 @@ $("liveBtn").onclick = async () => {
   if (ws) { stopLive(); return; }
   try {
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(`${wsProto}//${location.host}/api/stream-asr`);
+    const wsHost = (location.protocol === "file:" || !location.host) ? "127.0.0.1:8000" : location.host;
+    ws = new WebSocket(`${wsProto}//${wsHost}/api/stream-asr`);
     ws.onmessage = (ev) => {
 
       try {

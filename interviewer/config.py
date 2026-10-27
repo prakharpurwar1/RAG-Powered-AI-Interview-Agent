@@ -33,16 +33,33 @@ class InterviewConfig:
     job_description: str = ""          # Target job description text
 
     def validate(self) -> "InterviewConfig":
-        if self.mode not in {"practice", "hiring"}:
+        if not self.mode or self.mode not in {"practice", "hiring"}:
             raise ValueError("mode must be 'practice' or 'hiring'")
-        if self.interview_type not in {"behavioral", "technical", "mixed"}:
+        if not self.interview_type or self.interview_type not in {"behavioral", "technical", "mixed"}:
             raise ValueError("interview_type must be behavioral/technical/mixed")
-        if self.level not in {"junior", "mid", "senior"}:
+        if not str(self.role or "").strip():
+            raise ValueError("role is required")
+        if not self.level or self.level not in {"junior", "mid", "senior"}:
             raise ValueError("level must be junior/mid/senior")
+        if not str(self.candidate_name or "").strip():
+            raise ValueError("candidate_name is required")
+        if not str(self.language or "").strip():
+            raise ValueError("language is required")
         if self.mode == "hiring" and not self.consent:
             raise ValueError("hiring mode requires recorded consent (consent=true)")
-        self.max_questions = max(1, min(20, int(self.max_questions)))
+        try:
+            mq = int(self.max_questions)
+            if mq <= 0:
+                raise ValueError()
+            self.max_questions = max(1, min(20, mq))
+        except (ValueError, TypeError):
+            raise ValueError("max_questions must be a positive integer")
         self.retention_days = max(1, min(3650, int(self.retention_days)))
         self.resume_text = str(self.resume_text or "").strip()
         self.job_description = str(self.job_description or "").strip()
+        self.candidate_email = str(self.candidate_email or "").strip()
+        if self.candidate_email:
+            import re
+            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", self.candidate_email):
+                raise ValueError("candidate_email must be a valid email address")
         return self

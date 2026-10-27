@@ -426,7 +426,10 @@ async def start_interview(req: StartSessionRequest):
 
     if cfg.mode == "hiring" and req.randomize_order is None:
         cfg.randomize_order = True
-    cfg.validate()
+    try:
+        cfg.validate()
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
 
     sid = os.urandom(8).hex()
     store = get_store()
