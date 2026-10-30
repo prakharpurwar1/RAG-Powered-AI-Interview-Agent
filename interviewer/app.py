@@ -35,8 +35,8 @@ from .config import InterviewConfig
 from .documents import DocumentError, extract_document_text, validate_text_document
 from .engine import InterviewEngine
 from .integrity import IntegrityMonitor
-from .llm import build_llm, LLMError
-from .store import Store
+from .llm import build_llm, LLMError, sanitize_secret_text
+from .store import Store, StoreError
 from .streaming import build_streaming_asr
 from .voice import build_voice
 
@@ -59,6 +59,13 @@ def _log(event: str, **fields):
 
 def get_store() -> Store:
     global _STORE, _STORE_PATH
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+    if db_url and (db_url.startswith("postgres://") or db_url.startswith("postgresql://")):
+        if _STORE is None or _STORE_PATH != db_url:
+            _STORE = Store(database_url=db_url)
+            _STORE_PATH = db_url
+        return _STORE
+
     is_serverless = bool(
         os.environ.get("NETLIFY")
         or os.environ.get("VERCEL")
@@ -257,9 +264,14 @@ async def lifespan(app: FastAPI):
         if purged:
             sys.stderr.write(f"[Startup] Purged {purged} expired interview(s)\n")
     except Exception as e:
-        sys.stderr.write(f"[Startup Error] {e}\n")
+        sys.stderr.write(f"[Startup Warning] Database check skipped: {sanitize_secret_text(str(e))}\n")
     yield
-    # Shutdown logic if needed
+    # Shutdown logic: cleanly close database connection pool
+    try:
+        if _STORE is not None:
+            _STORE.close()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -286,12 +298,14 @@ app.add_middleware(
 # Frontend Static Routes
 # ---------------------------------------------------------------------------
 @app.get("/", include_in_schema=False)
+@app.get("/index.html", include_in_schema=False)
 async def serve_index():
     index_path = os.path.join(_WEB_DIR, "index.html")
     return FileResponse(index_path, media_type="text/html")
 
 
 @app.get("/dashboard", include_in_schema=False)
+@app.get("/dashboard.html", include_in_schema=False)
 async def serve_dashboard(
     token: Optional[str] = Query(None),
     authorization: Optional[str] = Header(None),
@@ -320,11 +334,20 @@ async def get_capabilities():
 async def get_health():
     """Healthcheck endpoint for monitoring uptime and active sessions."""
     sweep_sessions()
+    db_name = "unknown"
+    db_status = "ok"
+    try:
+        st = get_store()
+        db_name = st.path or st.backend_type
+    except Exception:
+        db_status = "unavailable"
+        db_name = "error"
     return {
         "status": "ok",
         "uptime_s": round(time.time() - STARTED_AT, 1),
         "sessions": len(_SESSIONS),
-        "db": get_store().path,
+        "db": db_name,
+        "db_status": db_status,
     }
 
 
@@ -432,8 +455,16 @@ async def start_interview(req: StartSessionRequest):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
 
     sid = os.urandom(8).hex()
-    store = get_store()
-    iid = store.create_interview(vars(cfg), llm="", session_id=sid)
+    try:
+        store = get_store()
+        iid = store.create_interview(vars(cfg), llm="", session_id=sid)
+    except StoreError as err:
+        sanitized_err = sanitize_secret_text(str(err))
+        _log("db_start_error", session_id=sid, error=sanitized_err)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service unavailable. Please check database connectivity.",
+        )
 
     # Phase 3: Index Resume & Job Description via RAG Vector Storage
     if cfg.resume_text or cfg.job_description:
@@ -457,7 +488,37 @@ async def start_interview(req: StartSessionRequest):
         "prompt_at": time.time(),
     }
 
-    first_message = engine.start()
+    try:
+        first_message = engine.start()
+    except LLMError as err:
+        upstream_status = getattr(err, "status_code", None)
+        sanitized_msg = sanitize_secret_text(str(err))
+        _log(
+            "llm_start_error",
+            session_id=sid,
+            interview_id=iid,
+            upstream_status=upstream_status,
+            error=sanitized_msg,
+        )
+        _SESSIONS.pop(sid, None)
+        status_info = f" (HTTP {upstream_status})" if upstream_status else ""
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Interview model error: Upstream AI service request failed{status_info}.",
+        )
+    except Exception as exc:
+        sanitized_msg = sanitize_secret_text(str(exc))
+        _log(
+            "llm_start_unexpected_error",
+            session_id=sid,
+            interview_id=iid,
+            error=sanitized_msg,
+        )
+        _SESSIONS.pop(sid, None)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Interview model error: Upstream AI service request failed.",
+        )
 
     # Persist opening message
     turns = engine.turns
@@ -586,10 +647,19 @@ async def send_message(req: MessageRequest):
     try:
         out = sess["engine"].respond(text)
     except LLMError as err:
-        _log("llm_generation_error", session_id=req.session_id, interview_id=sess["iid"], error=str(err))
+        upstream_status = getattr(err, "status_code", None)
+        sanitized_msg = sanitize_secret_text(str(err))
+        _log(
+            "llm_generation_error",
+            session_id=req.session_id,
+            interview_id=sess["iid"],
+            upstream_status=upstream_status,
+            error=sanitized_msg,
+        )
+        status_info = f" (HTTP {upstream_status})" if upstream_status else ""
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Interview model error: {err}",
+            detail=f"Interview model error: Upstream AI service request failed{status_info}.",
         )
     sess["prompt_at"] = time.time()
 
@@ -658,7 +728,12 @@ async def record_signal(req: SignalRequest):
 
     sess["last"] = time.time()
     sess["monitor"].record(req.kind, detail=req.detail)
-    return {"ok": True, "score": sess["monitor"].score()}
+    summary = sess["monitor"].summary()
+    try:
+        get_store().save_integrity(sess["iid"], summary)
+    except Exception as exc:
+        _log("save_integrity_error", session_id=req.session_id, interview_id=sess["iid"], error=str(exc))
+    return {"ok": True, "score": summary["score"]}
 
 
 

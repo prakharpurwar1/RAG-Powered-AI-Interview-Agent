@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
 from .config import InterviewConfig
-from .llm import LLMClient, LLMError
+from .llm import LLMClient, LLMError, sanitize_secret_text
 from .questions import generate_personalized_questions, questions_for
 from .rubric import rubric_for
 from .scoring import build_scorecard
@@ -30,13 +30,18 @@ def _log_diagnostic(event: str, **fields):
     sys.stderr.flush()
 
 
+ALLOWED_ACTIONS = {"follow_up", "next_question", "finish", "clarify", "rephrase", "conversational"}
+ALLOWED_INTENTS = {"answer", "greeting", "clarification", "rephrase", "meta_question", "off_topic"}
+
+
 @dataclass
 class TurnDecision:
-    action: str                  # "follow_up" | "next_question" | "finish"
+    action: str                  # "follow_up" | "next_question" | "finish" | "clarify" | "rephrase" | "conversational"
     spoken_response: str
     reason_for_decision: str
     competency: str
     evidence_used: list[str]
+    candidate_intent: str = "answer" # "answer" | "greeting" | "clarification" | "rephrase" | "meta_question" | "off_topic"
 
 
 def validate_turn_decision(data: dict) -> TurnDecision:
@@ -44,9 +49,20 @@ def validate_turn_decision(data: dict) -> TurnDecision:
     if not isinstance(data, dict):
         raise ValueError("Model decision must be a JSON object dictionary.")
 
-    action = str(data.get("action", "")).strip().lower()
-    if action not in {"follow_up", "next_question", "finish"}:
-        raise ValueError(f"Invalid action '{action}'. Must be one of: follow_up, next_question, finish.")
+    raw_action = str(data.get("action", "")).strip().lower()
+    raw_intent = str(data.get("candidate_intent", "")).strip().lower()
+
+    # Normalize action synonyms
+    action = raw_action
+    if action in {"greeting", "meta", "off_topic", "redirect", "small_talk", "divert"}:
+        action = "conversational"
+    elif action in {"clarification"}:
+        action = "clarify"
+    elif action in {"repeat", "rephrase_question"}:
+        action = "rephrase"
+
+    if action not in ALLOWED_ACTIONS:
+        raise ValueError(f"Invalid action '{action}'. Must be one of: {', '.join(sorted(ALLOWED_ACTIONS))}.")
 
     spoken = str(data.get("spoken_response", "")).strip()
     if not spoken:
@@ -63,12 +79,30 @@ def validate_turn_decision(data: dict) -> TurnDecision:
     else:
         ev_list = []
 
+    intent = raw_intent
+    if intent not in ALLOWED_INTENTS:
+        if raw_action in {"small_talk", "greeting"}:
+            intent = "greeting"
+        elif raw_action in {"meta", "process"}:
+            intent = "meta_question"
+        elif raw_action in {"divert", "off_topic", "redirect"}:
+            intent = "off_topic"
+        elif action == "clarify":
+            intent = "clarification"
+        elif action == "rephrase":
+            intent = "rephrase"
+        elif action == "conversational":
+            intent = "meta_question"
+        else:
+            intent = "answer"
+
     return TurnDecision(
         action=action,
         spoken_response=spoken,
         reason_for_decision=reason,
         competency=comp,
         evidence_used=ev_list,
+        candidate_intent=intent,
     )
 
 
@@ -127,6 +161,14 @@ class InterviewEngine:
             except Exception:
                 pass
         return []
+
+    def _current_question_text(self) -> str:
+        """Find the text of the current question or follow-up being addressed."""
+        for t in reversed(self.turns):
+            if t.role == "interviewer" and t.kind in ("message", "followup", "rephrase", "clarify"):
+                return t.text
+        first_q = self.questions[0] if self.questions else None
+        return first_q.text if first_q else "Tell me about your technical background and experience."
 
     # ---- prompt helpers -------------------------------------------------
     def _system_prompt(self) -> str:
@@ -190,15 +232,33 @@ class InterviewEngine:
             f"I'm looking forward to our conversation about the {self.config.role} role. "
             f"Let's start: {first}"
         )
-        lead = self.llm.chat(
-            self._history() + [{
-                "role": "user",
-                "content": (f"Begin the interview: greet the candidate briefly, then ask "
-                            f"this opening question: {first}"),
-            }],
-            task="greeting", max_tokens=220,
-        ).strip()
-        message = lead or greeting
+        try:
+            lead = self.llm.chat(
+                self._history() + [{
+                    "role": "user",
+                    "content": (f"Begin the interview: greet the candidate briefly, then ask "
+                                f"this opening question: {first}"),
+                }],
+                task="greeting", max_tokens=220,
+            ).strip()
+            message = lead or greeting
+        except LLMError as err:
+            _log_diagnostic(
+                "model_greeting_error",
+                session_id=self.session_id or "",
+                interview_id=self.interview_id or "",
+                error=sanitize_secret_text(str(err)),
+            )
+            raise
+        except Exception as exc:
+            sanitized_exc = sanitize_secret_text(str(exc))
+            _log_diagnostic(
+                "model_greeting_error",
+                session_id=self.session_id or "",
+                interview_id=self.interview_id or "",
+                error=sanitized_exc,
+            )
+            raise LLMError(f"Model failed to generate greeting: {sanitized_exc}") from exc
 
         ev = first_q.evidence if (first_q and first_q.evidence) else self._retrieve(
             f"{self.config.role} background skills summary", top_k=2
@@ -216,11 +276,14 @@ class InterviewEngine:
 
         # --- wrap-up phase: candidate asked their questions -------------
         if self.stage == "candidate_questions":
-            wrap = self.llm.chat(
-                self._history() + [{"role": "user", "content":
-                    "Wrap up the interview warmly in 1-2 sentences."}],
-                task="wrapup", max_tokens=160,
-            ).strip()
+            try:
+                wrap = self.llm.chat(
+                    self._history() + [{"role": "user", "content":
+                        "Wrap up the interview warmly in 1-2 sentences."}],
+                    task="wrapup", max_tokens=160,
+                ).strip()
+            except Exception:
+                wrap = ""
             if not wrap:
                 wrap = ("Thanks for those questions — and for your time today. "
                         "We'll be in touch about next steps.")
@@ -258,12 +321,14 @@ class InterviewEngine:
         from .rag import format_evidence_block
         ev_block = format_evidence_block(ev) if ev else "(No specific document chunks retrieved)"
 
+        current_q_str = self._current_question_text()
         prev_questions = [t.text for t in self.turns if t.role == "interviewer"]
         prev_q_str = "\n".join(f"- {q}" for q in prev_questions) if prev_questions else "(None)"
 
         decision_prompt = (
             "You are an expert AI interviewer conducting a live screening.\n\n"
-            f"--- CANDIDATE LATEST ANSWER ---\n\"{user_text}\"\n\n"
+            f"--- CANDIDATE LATEST MESSAGE ---\n\"{user_text}\"\n\n"
+            f"--- CURRENT QUESTION BEING DISCUSSED ---\n\"{current_q_str}\"\n\n"
             f"--- CURRENT COMPETENCY BEING ASSESSED ---\n{self.current_competency}\n\n"
             f"--- INTERVIEW PROGRESS STATE ---\n"
             f"- Main Questions Asked: {self.questions_asked} of {self.config.max_questions}\n"
@@ -274,29 +339,49 @@ class InterviewEngine:
             f"- Uncovered Competencies Remaining: {uncovered}\n\n"
             f"--- PREVIOUSLY ASKED QUESTIONS (DO NOT REPEAT) ---\n{prev_q_str}\n\n"
             f"--- RETRIEVED VERIFIED EVIDENCE (RAG) ---\n{ev_block}\n\n"
-            "--- DECISION INSTRUCTIONS ---\n"
-            "1. Deeply understand the candidate's latest answer before deciding what to ask next.\n"
-            "2. If the candidate mentioned a specific project, technology, decision, or dataset "
-            "(e.g. HR attrition, machine-learning, IBM dataset, money-management tool), REFER TO IT DIRECTLY.\n"
-            "3. If the answer is vague, superficial, or lacks concrete details on what THEY personally did, "
-            "and Can Follow Up is True: choose action='follow_up'. Ask ONE targeted follow-up.\n"
-            "4. If the answer explains what they did but lacks measurable impact or outcomes, "
-            "and Can Follow Up is True: choose action='follow_up'. Ask how success was measured or validated without assuming metrics exist.\n"
-            "5. If the answer is sufficiently complete, or if Can Follow Up is False:\n"
-            "   - If Reached Max Questions is True: choose action='finish'.\n"
-            "   - Otherwise: choose action='next_question'. Move to an uncovered competency from the list and ask a fresh grounded question.\n"
-            "6. DO NOT repeat or rephrase any question from the PREVIOUSLY ASKED QUESTIONS list.\n"
-            "7. Return JSON ONLY matching this structure:\n"
+            "--- CANDIDATE INTENT & DECISION INSTRUCTIONS ---\n"
+            "First, classify the candidate's intent from their latest message:\n"
+            "1. GREETING / SMALL TALK (e.g. 'hello', 'good morning', 'thanks for having me'):\n"
+            "   - action='conversational', candidate_intent='greeting'.\n"
+            "   - Greet warmly in 1 brief sentence, then gently guide them to address the current question.\n"
+            "2. CLARIFICATION REQUEST (e.g. 'what do you mean by trade-offs?', 'can you explain what you're asking?'):\n"
+            "   - action='clarify', candidate_intent='clarification'.\n"
+            "   - Explain the question or concept clearly WITHOUT giving away the expected answer or solution, then invite them to respond.\n"
+            "3. REPEAT OR REPHRASE REQUEST (e.g. 'can you repeat the question?', 'could you rephrase that?'):\n"
+            "   - action='rephrase', candidate_intent='rephrase'.\n"
+            "   - Restate or simplify the current question clearly and invite them to answer.\n"
+            "4. META-QUESTION / PROCESS QUESTION (e.g. 'are you rule-based?', 'are you an AI?', 'how is this evaluated?'):\n"
+            "   - action='conversational', candidate_intent='meta_question'.\n"
+            "   - Answer directly and truthfully in 1-2 sentences (e.g. explain that you are an AI interviewer driven by an LLM with RAG context rather than a rigid rule-based script), then guide them back to the current question.\n"
+            "5. OFF-TOPIC REMARK (unrelated to the interview):\n"
+            "   - action='conversational', candidate_intent='off_topic'.\n"
+            "   - Briefly acknowledge and politely redirect back to the current question.\n"
+            "6. INTERVIEW ANSWER (the candidate is answering the question):\n"
+            "   - candidate_intent='answer'.\n"
+            "   - If they mentioned a specific project, technology, or decision, refer to it directly.\n"
+            "   - If the answer is vague or lacks measurable outcomes and Can Follow Up is True: action='follow_up'. Ask ONE targeted follow-up.\n"
+            "   - If the answer explains what they did but lacks measurable impact or outcomes and Can Follow Up is True: action='follow_up'. Ask how success was measured without assuming metrics exist.\n"
+            "   - If the answer is sufficiently complete, or if Can Follow Up is False:\n"
+            "     - If Reached Max Questions is True: action='finish'.\n"
+            "     - Otherwise: action='next_question'. Move to an uncovered competency from the list and ask a fresh grounded question.\n\n"
+            "DO NOT repeat or rephrase any question from the PREVIOUSLY ASKED QUESTIONS list when moving to a new competency.\n"
+            "Return JSON ONLY matching this structure:\n"
             "{\n"
-            "  \"action\": \"follow_up\" | \"next_question\" | \"finish\",\n"
+            "  \"candidate_intent\": \"greeting\" | \"clarification\" | \"rephrase\" | \"meta_question\" | \"off_topic\" | \"answer\",\n"
+            "  \"action\": \"conversational\" | \"clarify\" | \"rephrase\" | \"follow_up\" | \"next_question\" | \"finish\",\n"
             "  \"spoken_response\": \"1-3 conversational spoken sentences to the candidate\",\n"
-            "  \"reason_for_decision\": \"Clear explanation of why this action was chosen\",\n"
+            "  \"reason_for_decision\": \"Clear explanation of why this action and intent were chosen\",\n"
             "  \"competency\": \"competency name\",\n"
-            "  \"evidence_used\": [\"facts or quotes from candidate answer and retrieved documents\"]\n"
+            "  \"evidence_used\": [\"facts or quotes from candidate message and retrieved documents\"]\n"
             "}"
         )
 
-        messages = self._history() + [{"role": "user", "content": decision_prompt}]
+        # Omit the last candidate turn from _history() here because decision_prompt directly frames the candidate's latest message
+        prior_turns = self.turns[:-1] if self.turns and self.turns[-1].role == "candidate" else self.turns
+        messages = [{"role": "system", "content": self._system_prompt()}] + [
+            {"role": "assistant" if t.role == "interviewer" else "user", "content": t.text}
+            for t in prior_turns
+        ] + [{"role": "user", "content": decision_prompt}]
 
         try:
             raw_decision = self.llm.chat(
@@ -328,7 +413,7 @@ class InterviewEngine:
                             error=str(exc))
             raise LLMError(f"Model failed to return a valid structured decision: {exc}") from exc
 
-        # Guardrails: enforce engine constraints
+        # Guardrails: enforce engine constraints for answer actions
         if decision.action == "follow_up" and not can_followup:
             if reached_max_questions:
                 decision.action = "finish"
@@ -345,6 +430,7 @@ class InterviewEngine:
             session_id=self.session_id or "",
             interview_id=self.interview_id or "",
             action=decision.action,
+            candidate_intent=decision.candidate_intent,
             competency=decision.competency,
             reason_for_decision=decision.reason_for_decision,
             evidence_used=decision.evidence_used,
@@ -352,7 +438,23 @@ class InterviewEngine:
         )
 
         # Apply action
-        if decision.action == "follow_up":
+        if decision.action in ("clarify", "rephrase", "conversational"):
+            # Mark candidate turn with detected non-answer intent so it's not scored as technical evidence
+            if self.turns and self.turns[-1].role == "candidate":
+                self.turns[-1].kind = decision.candidate_intent
+            self._record("interviewer", decision.spoken_response, kind=decision.action,
+                         question_id=self.current_competency, evidence=ev if ev else None)
+            return {
+                "message": decision.spoken_response,
+                "stage": self.stage,
+                "done": False,
+                "evidence": ev,
+                "decision": asdict(decision),
+            }
+
+        elif decision.action == "follow_up":
+            if self.turns and self.turns[-1].role == "candidate":
+                self.turns[-1].kind = "answer"
             self.followups_used += 1
             # Main question counter does NOT advance merely because a follow-up was asked!
             self._record("interviewer", decision.spoken_response, kind="followup",
@@ -366,6 +468,8 @@ class InterviewEngine:
             }
 
         elif decision.action == "next_question":
+            if self.turns and self.turns[-1].role == "candidate":
+                self.turns[-1].kind = "answer"
             if decision.competency in self.covered_competencies and uncovered:
                 decision.competency = uncovered[0]
             self.followups_used = 0
@@ -385,6 +489,8 @@ class InterviewEngine:
             }
 
         else: # finish
+            if self.turns and self.turns[-1].role == "candidate":
+                self.turns[-1].kind = "answer"
             self.stage = "candidate_questions"
             msg = decision.spoken_response
             if not any(w in msg.lower() for w in ("questions", "anything", "ask me")):

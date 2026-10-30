@@ -52,10 +52,10 @@ from .config import InterviewConfig
 from .documents import DocumentError, extract_document_text, validate_text_document
 from .engine import InterviewEngine
 from .integrity import IntegrityMonitor
-from .llm import build_llm, LLMError
+from .llm import build_llm, LLMError, sanitize_secret_text
 from .streaming import (OP_CLOSE, OP_TEXT, _Buffered, build_streaming_asr,
                         is_websocket_request, read_frame, send_frame, server_handshake)
-from .store import Store
+from .store import Store, StoreError
 from .voice import build_voice
 
 _WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
@@ -83,6 +83,12 @@ def _log(event: str, **fields):
 
 def _store():
     global _STORE, _STORE_PATH
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+    if db_url and (db_url.startswith("postgres://") or db_url.startswith("postgresql://")):
+        if _STORE is None or _STORE_PATH != db_url:
+            _STORE = Store(database_url=db_url)
+            _STORE_PATH = db_url
+        return _STORE
     path = os.environ.get("INTERVIEW_DB", "interviews.db")
     if _STORE is None or _STORE_PATH != path:
         _STORE = Store(path)
@@ -305,8 +311,13 @@ class Handler(BaseHTTPRequestHandler):
         cfg.validate()
 
         sid = os.urandom(8).hex()
-        st = _store()
-        iid = st.create_interview(vars(cfg), llm="")
+        try:
+            st = _store()
+            iid = st.create_interview(vars(cfg), llm="")
+        except StoreError as err:
+            sanitized_err = sanitize_secret_text(str(err))
+            _log("db_start_error", error=sanitized_err)
+            return self._send(503, {"error": "Database service unavailable. Please check database connectivity."})
 
         # Phase 3: Index Resume & Job Description via RAG Vector Storage
         if cfg.resume_text or cfg.job_description:
@@ -322,7 +333,16 @@ class Handler(BaseHTTPRequestHandler):
             _SESSIONS[sid] = {"engine": engine, "iid": iid, "persisted": 0,
                               "monitor": monitor, "created": time.time(),
                               "last": time.time(), "prompt_at": time.time()}
-        msg = engine.start()
+        try:
+            msg = engine.start()
+        except LLMError as err:
+            with _LOCK:
+                _SESSIONS.pop(sid, None)
+            upstream_status = getattr(err, "status_code", None)
+            sanitized_msg = sanitize_secret_text(str(err))
+            _log("llm_start_error", session=sid, interview=iid, upstream_status=upstream_status, error=sanitized_msg)
+            status_info = f" (HTTP {upstream_status})" if upstream_status else ""
+            return self._send(502, {"error": f"Interview model error: Upstream AI service request failed{status_info}."})
         self._persist_new_turns(sid)
         _log("interview_started", interview=iid, mode=cfg.mode, type=cfg.interview_type)
         return self._send(200, {"session_id": sid, "interview_id": iid, "message": msg,
@@ -344,8 +364,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             out = sess["engine"].respond(text)
         except LLMError as err:
-            _log("llm_generation_error", session=payload.get("session_id"), interview_id=sess["iid"], error=str(err))
-            return self._send(502, {"error": f"Interview model error: {err}"})
+            upstream_status = getattr(err, "status_code", None)
+            sanitized_msg = sanitize_secret_text(str(err))
+            _log("llm_generation_error", session=payload.get("session_id"), interview_id=sess["iid"], upstream_status=upstream_status, error=sanitized_msg)
+            status_info = f" (HTTP {upstream_status})" if upstream_status else ""
+            return self._send(502, {"error": f"Interview model error: Upstream AI service request failed{status_info}."})
         sess["prompt_at"] = time.time()
         self._persist_new_turns(payload["session_id"])
         if out.get("done"):

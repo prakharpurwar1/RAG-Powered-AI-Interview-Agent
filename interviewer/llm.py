@@ -9,6 +9,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -19,8 +22,89 @@ except ImportError:
     pass
 
 
+from typing import Optional
+
+
 class LLMError(RuntimeError):
-    pass
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def sanitize_secret_text(text: str) -> str:
+    """Removes sensitive keys, tokens, and authorization credentials from logs/error strings."""
+    if not text:
+        return ""
+    sanitized = str(text)
+
+    # 1. Scrub exact matches of known environment secrets
+    for env_var in ("LLM_API_KEY", "SARVAM_API_KEY", "DATABASE_URL", "TEST_DATABASE_URL", "DASHBOARD_TOKEN"):
+        val = os.environ.get(env_var, "").strip()
+        if val and len(val) >= 4:
+            sanitized = sanitized.replace(val, "[REDACTED]")
+
+    # 2. Scrub Bearer tokens
+    sanitized = re.sub(r'(?i)\bBearer\s+[A-Za-z0-9_\-\.]{6,}', 'Bearer [REDACTED]', sanitized)
+
+    # 3. Scrub header-style key/value pairs (e.g. api-subscription-key: xyz, password 'xyz')
+    sanitized = re.sub(
+        r'(?i)(api[-_]?subscription[-_]?key|api[-_]?key|authorization|token|secret|password)\s*[:=\s]\s*["\']?[A-Za-z0-9_\-\.]{4,}["\']?',
+        r'\1: [REDACTED]',
+        sanitized,
+    )
+
+    # 4. Scrub embedded basic auth credentials in URLs (e.g. postgres://user:pass@host)
+    sanitized = re.sub(r'://([^:]+):([^@]+)@', r'://\1:[REDACTED]@', sanitized)
+
+    # 5. Scrub standard API key shapes
+    sanitized = re.sub(r'\b(sk|sarvam)[-_][a-zA-Z0-9_\-]{8,}\b', '[REDACTED]', sanitized)
+
+    return sanitized
+
+
+def _log_llm_diagnostic(event: str, **fields):
+    """Write structured diagnostic log to sys.stderr with secret sanitization."""
+    rec = {"t": round(time.time(), 3), "event": event}
+    for k, v in fields.items():
+        if isinstance(v, str):
+            rec[k] = sanitize_secret_text(v)
+        else:
+            rec[k] = v
+    try:
+        sys.stderr.write(json.dumps(rec) + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _categorize_http_status(status_code: int) -> str:
+    """Classify HTTP status codes into standardized error categories."""
+    if status_code in (401, 403):
+        return "authentication_failure"
+    elif status_code in (402, 429):
+        return "quota_error"
+    elif status_code in (400, 422):
+        return "invalid_request_error"
+    elif 500 <= status_code < 600:
+        return "upstream_server_error"
+    return "http_error"
+
+
+def _categorize_network_error(exc: Exception) -> str:
+    """Classify network / URLError exceptions into standardized error categories."""
+    err_str = str(exc).lower()
+    if isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in err_str:
+        return "timeout"
+    reason = getattr(exc, "reason", None)
+    if reason:
+        reason_str = str(reason).lower()
+        if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in reason_str:
+            return "timeout"
+        if "ssl" in reason_str or "certificate" in reason_str:
+            return "ssl_error"
+        if "connection refused" in reason_str:
+            return "connection_refused"
+    return "connection_error"
 
 
 class LLMClient:
@@ -64,8 +148,9 @@ def _mock_decide_turn(messages):
     """Generates intelligent structured turn decisions for offline/testing mode.
 
     Understands the candidate's answer, references projects mentioned, asks targeted
-    follow-ups for vague answers or missing measurable impact, and transitions to
-    different competencies when answers are sufficiently complete.
+    follow-ups for vague answers or missing measurable impact, handles greetings,
+    clarification requests, questions about rule-based/AI architecture, and off-topic
+    questions gracefully, and transitions to different competencies when answers are complete.
     """
     last_user_content = ""
     for m in reversed(messages):
@@ -73,8 +158,10 @@ def _mock_decide_turn(messages):
             last_user_content = m.get("content", "")
             break
 
-    # Extract candidate's latest answer from prompt format
-    match_ans = re.search(r'CANDIDATE LATEST ANSWER:\s*"?(.*?)"?\s*(?:\n---|\nCURRENT|\n$)', last_user_content, re.DOTALL)
+    # Extract candidate's latest message from prompt format
+    match_ans = re.search(r'CANDIDATE LATEST (?:INPUT|MESSAGE|ANSWER)[^\n]*\n+"?(.*?)"?\s*(?:\n---|\nCURRENT|\n$)', last_user_content, re.DOTALL | re.IGNORECASE)
+    if not match_ans:
+        match_ans = re.search(r'CANDIDATE LATEST (?:INPUT|MESSAGE|ANSWER):\s*"?(.*?)"?\s*(?:\n---|\nCURRENT|\n$)', last_user_content, re.DOTALL | re.IGNORECASE)
     candidate_ans = match_ans.group(1).strip() if match_ans else ""
     if not candidate_ans and messages:
         # Fallback to inspecting raw text of earlier user message
@@ -85,6 +172,12 @@ def _mock_decide_turn(messages):
 
     ans_lower = candidate_ans.lower()
     words = candidate_ans.split()
+
+    # Extract current question being discussed if present
+    match_q = re.search(r'CURRENT QUESTION BEING DISCUSSED[^\n]*\n+"?(.*?)"?\s*(?:\n---|\nCURRENT|\n$)', last_user_content, re.DOTALL | re.IGNORECASE)
+    if not match_q:
+        match_q = re.search(r'CURRENT QUESTION BEING DISCUSSED:\s*"?(.*?)"?\s*(?:\n---|\nCURRENT|\n$)', last_user_content, re.DOTALL | re.IGNORECASE)
+    current_q = match_q.group(1).strip() if match_q else "tell me about your technical background."
 
     # Extract cues passed by engine
     can_followup = "can follow up: true" in last_user_content.lower() or "can_followup: true" in last_user_content.lower()
@@ -112,6 +205,121 @@ def _mock_decide_turn(messages):
     elif "redis" in ans_lower or "cache" in ans_lower or "caching" in ans_lower:
         project_mentioned = "Redis distributed caching architecture"
 
+    has_metrics = bool(re.search(r'\b(?:\d+%?|percent|users|latency|ms|roi|accuracy|f1|auc|qps|sla)\b', ans_lower))
+
+    # -------------------------------------------------------------------------
+    # Intent 1: Meta-question (e.g. "Are you rule-based?", AI process questions)
+    # -------------------------------------------------------------------------
+    is_meta = any(p in ans_lower for p in (
+        "rule-based", "rule based", "are you rule", "are you an ai", "are you a bot",
+        "are you ai", "are you human", "are you a real person", "how does this work",
+        "how is this evaluated", "how are you evaluating", "how will i be scored",
+        "interview process", "who created you"
+    ))
+    if is_meta and not project_mentioned:
+        return {
+            "action": "conversational",
+            "spoken_response": (
+                "I am an AI interviewer driven by a large language model with retrieval-augmented context "
+                "that adapts dynamically to your background, rather than following a rigid rule-based script. "
+                f"Returning to our focus: {current_q}"
+            ),
+            "reason_for_decision": "Candidate inquired about the AI interviewer architecture or process; answered transparently and guided back to current question.",
+            "competency": current_comp,
+            "evidence_used": [f"Candidate asked: '{candidate_ans[:80]}'"],
+            "candidate_intent": "meta_question",
+        }
+
+    # -------------------------------------------------------------------------
+    # Intent 2: Clarification request
+    # -------------------------------------------------------------------------
+    is_clarification = any(p in ans_lower for p in (
+        "what do you mean", "can you clarify", "could you clarify", "clarify what you mean",
+        "clarification", "could you explain what", "can you explain what", "don't understand",
+        "didn't understand", "what is meant by", "meaning of", "can you give an example of what you mean",
+        "what specifically", "what are you looking for", "looking for in this question", "what kind of details"
+    ))
+    if is_clarification and not project_mentioned:
+        if "trade-off" in ans_lower or "tradeoff" in ans_lower:
+            clarification_explanation = (
+                "By technical trade-offs, I mean how you balanced competing architectural priorities—such as "
+                "throughput versus latency, consistency versus availability, or delivery speed versus technical debt. "
+                "How did you evaluate those considerations in your work?"
+            )
+        else:
+            clarification_explanation = (
+                f"To clarify, we are exploring your direct personal ownership and technical choices regarding {current_comp.replace('_', ' ')}. "
+                "Could you walk me through a specific real-world example from your past experience?"
+            )
+        return {
+            "action": "clarify",
+            "spoken_response": clarification_explanation,
+            "reason_for_decision": "Candidate requested clarification on question concepts; explained context clearly without revealing expected answers.",
+            "competency": current_comp,
+            "evidence_used": [f"Candidate asked: '{candidate_ans[:80]}'"],
+            "candidate_intent": "clarification",
+        }
+
+    # -------------------------------------------------------------------------
+    # Intent 3: Repeat / Rephrase request
+    # -------------------------------------------------------------------------
+    is_rephrase = any(p in ans_lower for p in (
+        "repeat the question", "repeat that", "say that again", "rephrase", "could you repeat",
+        "can you repeat", "can you restate", "didn't catch that", "pardon", "could you rephrase"
+    ))
+    if is_rephrase and not project_mentioned:
+        return {
+            "action": "rephrase",
+            "spoken_response": f"Certainly, let me restate the question for you: {current_q}",
+            "reason_for_decision": "Candidate asked to repeat or rephrase the question; restated clearly.",
+            "competency": current_comp,
+            "evidence_used": [f"Candidate requested: '{candidate_ans[:80]}'"],
+            "candidate_intent": "rephrase",
+        }
+
+    # -------------------------------------------------------------------------
+    # Intent 4: Greeting / Small Talk
+    # -------------------------------------------------------------------------
+    is_greeting = (
+        len(words) <= 12 and
+        any(ans_lower.startswith(w) or f" {w}" in ans_lower for w in (
+            "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+            "thanks for having me", "nice to meet you", "how are you"
+        )) and not project_mentioned and not has_metrics
+    )
+    if is_greeting:
+        return {
+            "action": "conversational",
+            "spoken_response": f"Hello! Great to connect with you today. Whenever you're ready, let's turn to our question: {current_q}",
+            "reason_for_decision": "Candidate offered a greeting; welcomed them warmly and directed to the active interview question.",
+            "competency": current_comp,
+            "evidence_used": [f"Candidate greeted: '{candidate_ans[:60]}'"],
+            "candidate_intent": "greeting",
+        }
+
+    # -------------------------------------------------------------------------
+    # Intent 5: Off-topic remark
+    # -------------------------------------------------------------------------
+    is_off_topic = (
+        any(p in ans_lower for p in (
+            "weather", "capital of", "what's for lunch", "who won", "favorite food",
+            "tell me a joke", "recipe", "how old are you", "what time is it",
+            "match", "champions league", "cricket", "football", "sports", "game yesterday"
+        )) and not project_mentioned and not has_metrics
+    )
+    if is_off_topic:
+        return {
+            "action": "conversational",
+            "spoken_response": f"I am focused on conducting your technical interview today. Let's return to the question at hand: {current_q}",
+            "reason_for_decision": "Candidate asked an off-topic question; politely acknowledged and redirected to the interview agenda.",
+            "competency": current_comp,
+            "evidence_used": [f"Candidate asked: '{candidate_ans[:60]}'"],
+            "candidate_intent": "off_topic",
+        }
+
+    # -------------------------------------------------------------------------
+    # Intent 6: Candidate is answering the interview question
+    # -------------------------------------------------------------------------
     # Rule 1: Finish if max questions reached and no follow-up needed
     if reached_max and not (can_followup and len(words) < 15):
         return {
@@ -120,11 +328,11 @@ def _mock_decide_turn(messages):
             "reason_for_decision": "Completed all planned interview competencies for this session.",
             "competency": "wrapup",
             "evidence_used": [f"Candidate concluded with: '{candidate_ans[:80]}...'"] if candidate_ans else ["Interview sequence complete"],
+            "candidate_intent": "answer",
         }
 
     # Rule 2: Vague answer OR missing measurable impact -> Follow up (if allowed)
     is_vague = len(words) < 22 or any(m in ans_lower for m in ("learned and adapted", "i learned", "adapted to them", "it worked fine", "built the backend", "used python"))
-    has_metrics = bool(re.search(r'\b(?:\d+%?|percent|users|latency|ms|roi|accuracy|f1|auc|qps|sla)\b', ans_lower))
 
     if can_followup and (is_vague or not has_metrics):
         if project_mentioned:
@@ -148,6 +356,7 @@ def _mock_decide_turn(messages):
             "reason_for_decision": reason,
             "competency": current_comp,
             "evidence_used": [f"Candidate stated: '{candidate_ans[:100]}'"],
+            "candidate_intent": "answer",
         }
 
     # Rule 3: Sufficiently complete answer -> Advance to next competency
@@ -168,6 +377,7 @@ def _mock_decide_turn(messages):
         "reason_for_decision": reason,
         "competency": next_comp,
         "evidence_used": [f"Candidate demonstrated experience in {current_comp}: '{candidate_ans[:100]}'"],
+        "candidate_intent": "answer",
     }
 
 
@@ -186,6 +396,9 @@ def _mock_scores(messages):
             continue
         if in_transcript:
             if line.startswith("CANDIDATE:") or "[CANDIDATE" in line:
+                # Exclude non-answer conversational turns from candidate lines evaluated for technical score
+                if any(k in line.lower() for k in ("clarification", "meta", "greeting", "rephrase", "off_topic", "conversational")):
+                    continue
                 # Strip prefix
                 txt = line.split(":", 1)[-1].strip()
                 if txt:
@@ -195,6 +408,8 @@ def _mock_scores(messages):
         # Fallback to inspecting any candidate text in content
         for line in content.split("\n"):
             if "[CANDIDATE" in line or line.startswith("CANDIDATE:"):
+                if any(k in line.lower() for k in ("clarification", "meta", "greeting", "rephrase", "off_topic", "conversational")):
+                    continue
                 candidate_lines.append(line.split(":", 1)[-1].strip())
 
     combined_text = " ".join(candidate_lines).strip()
@@ -408,6 +623,20 @@ def _mock_questions(messages):
     }
 
 
+def _ssl_context():
+    """Build SSL context using certifi CA bundle if available."""
+    try:
+        import certifi
+        import ssl
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        try:
+            import ssl
+            return ssl.create_default_context()
+        except Exception:
+            return None
+
+
 class OpenAICompatLLM(LLMClient):
     """Works with any OpenAI-compatible /chat/completions endpoint.
 
@@ -419,7 +648,7 @@ class OpenAICompatLLM(LLMClient):
         self.api_key = api_key or os.environ.get("LLM_API_KEY") or os.environ.get("SARVAM_API_KEY", "")
         self.base_url = (base_url or os.environ.get("LLM_BASE_URL",
                                                      "https://api.sarvam.ai/v1")).rstrip("/")
-        self.model = model or os.environ.get("LLM_MODEL", "sarvam-105b")
+        self.model = model or os.environ.get("LLM_MODEL", "sarvam-105b-conversations")
         # Sarvam uses the 'api-subscription-key' header; OpenAI-style uses Bearer.
         self.auth_style = auth_style or os.environ.get("LLM_AUTH_STYLE", "api-subscription-key")
         self.timeout = timeout
@@ -450,15 +679,88 @@ class OpenAICompatLLM(LLMClient):
             headers=self._headers(),
             method="POST",
         )
+        ctx = _ssl_context()
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with urllib.request.urlopen(req, context=ctx, timeout=self.timeout) as resp:
+                raw_bytes = resp.read()
+                data = json.loads(raw_bytes.decode("utf-8"))
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", "ignore")[:400]
-            raise LLMError(f"HTTP {e.code} from LLM provider ({self.base_url}): {err_body}") from e
+            sanitized_body = sanitize_secret_text(err_body)
+            sanitized_url = sanitize_secret_text(self.base_url)
+            cat = _categorize_http_status(e.code)
+            _log_llm_diagnostic(
+                "llm_request_failed",
+                provider="sarvam",
+                model=self.model,
+                endpoint=sanitized_url,
+                status_code=e.code,
+                error_category=cat,
+                error_response=sanitized_body,
+                task=task,
+            )
+            raise LLMError(
+                f"HTTP {e.code} ({cat}) from LLM provider ({sanitized_url}): {sanitized_body}",
+                status_code=e.code,
+            ) from e
         except urllib.error.URLError as e:
-            raise LLMError(f"Network error connecting to LLM provider ({self.base_url}): {e}") from e
-        return data["choices"][0]["message"]["content"]
+            cat = _categorize_network_error(e)
+            sanitized_err = sanitize_secret_text(str(e.reason if hasattr(e, "reason") else e))
+            sanitized_url = sanitize_secret_text(self.base_url)
+            _log_llm_diagnostic(
+                "llm_request_failed",
+                provider="sarvam",
+                model=self.model,
+                endpoint=sanitized_url,
+                status_code=None,
+                error_category=cat,
+                error_response=sanitized_err,
+                task=task,
+            )
+            raise LLMError(
+                f"{cat.replace('_', ' ').title()} connecting to LLM provider ({sanitized_url}): {sanitized_err}",
+                status_code=None,
+            ) from e
+
+        if not isinstance(data, dict) or "choices" not in data or not data["choices"]:
+            sanitized_url = sanitize_secret_text(self.base_url)
+            err_detail = data.get("error", {}).get("message") if isinstance(data, dict) and isinstance(data.get("error"), dict) else str(data)[:200]
+            sanitized_detail = sanitize_secret_text(str(err_detail))
+            _log_llm_diagnostic(
+                "llm_request_failed",
+                provider="sarvam",
+                model=self.model,
+                endpoint=sanitized_url,
+                status_code=200,
+                error_category="invalid_response_schema",
+                error_response=sanitized_detail,
+                task=task,
+            )
+            raise LLMError(
+                f"Unexpected response schema from LLM provider ({sanitized_url}): {sanitized_detail}"
+            )
+
+        choice_msg = data["choices"][0].get("message", {})
+        content = choice_msg.get("content")
+        if content is None:
+            finish_reason = data["choices"][0].get("finish_reason", "unknown")
+            refusal = choice_msg.get("refusal")
+            sanitized_url = sanitize_secret_text(self.base_url)
+            _log_llm_diagnostic(
+                "llm_request_failed",
+                provider="sarvam",
+                model=self.model,
+                endpoint=sanitized_url,
+                status_code=200,
+                error_category="empty_content_response",
+                error_response=f"finish_reason: {finish_reason}, refusal: {refusal}",
+                task=task,
+            )
+            raise LLMError(
+                f"LLM provider ({sanitized_url}) returned empty content (finish_reason: {finish_reason}, refusal: {refusal})"
+            )
+
+        return str(content)
 
     @property
     def name(self):

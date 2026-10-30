@@ -221,7 +221,11 @@ def _prompt(rubric, turns, config) -> str:
         f'      "stronger_answer_example": "Situation: ... Task: ... Action: ... Result: ..."\n'
         f"    }}\n"
         f"  ]\n"
-        f"}}"
+        f"}}\n"
+        f"6. CANDIDATE INTENTS & NON-ANSWERS: Only evaluate substantive candidate answers. "
+        f"Completely disregard greetings, small talk, clarification requests, repeat/rephrase requests, "
+        f"and meta-questions (such as asking if the interviewer is rule-based). "
+        f"Do NOT penalize candidates or deduct scores for asking clarification or meta questions."
     )
 
 
@@ -229,17 +233,21 @@ def build_scorecard(llm, rubric, turns, config) -> ScoreCard:
     """Orchestrates structured evaluation across turns and computes normalized scorecard."""
     # Handle empty or zero-turn interviews gracefully
     candidate_turns = [t for t in turns if getattr(t, "role", "") == "candidate" and getattr(t, "text", "").strip()]
-    if not candidate_turns:
-        return _build_unassessed_scorecard(rubric, "Interview concluded before candidate submitted answers.")
+    substantive_candidate_turns = [
+        t for t in candidate_turns
+        if getattr(t, "kind", "answer") not in ("greeting", "clarification", "rephrase", "meta_question", "off_topic", "conversational")
+    ]
+    if not candidate_turns or not substantive_candidate_turns:
+        return _build_unassessed_scorecard(rubric, "Interview concluded before candidate submitted substantive answers.")
 
     msgs = [{"role": "user", "content": _prompt(rubric, turns, config)}]
     try:
         raw = llm.chat(msgs, task="score", temperature=0.2, max_tokens=1800, json_mode=True)
         data = _parse(raw)
     except Exception as exc:
-        data = _fallback_heuristic_score(rubric, candidate_turns, error=str(exc))
+        data = _fallback_heuristic_score(rubric, substantive_candidate_turns, error=str(exc))
 
-    return validate_and_build_scorecard(data, rubric, candidate_turns, config)
+    return validate_and_build_scorecard(data, rubric, substantive_candidate_turns, config)
 
 
 def validate_and_build_scorecard(data: dict, rubric: list, candidate_turns: list, config: Any) -> ScoreCard:

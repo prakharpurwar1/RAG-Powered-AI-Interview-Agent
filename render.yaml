@@ -15,6 +15,9 @@ services:
         value: interviews.db
       - key: SESSION_TTL_SECONDS
         value: 21600
+      # Database: Supabase PostgreSQL (Set in Render Dashboard)
+      - key: DATABASE_URL
+        sync: false
       # Optional: Add LLM or Voice API keys here
       # - key: LLM_API_KEY
       #   sync: false

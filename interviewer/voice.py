@@ -101,7 +101,12 @@ class VoiceIO:
         req = urllib.request.Request(SARVAM_BASE + path, data=body,
                                      headers=self._headers(content_type), method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            from .llm import _ssl_context
+            ctx = _ssl_context()
+        except Exception:
+            ctx = None
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=60) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"Sarvam HTTP {e.code}: "
