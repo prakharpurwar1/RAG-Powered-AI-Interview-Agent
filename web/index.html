@@ -2121,7 +2121,12 @@ $("startBtn").onclick = async () => {
     proctoring = r.proctoring !== false;
 
     $("roomRole").textContent = `${roleVal} Interview`;
-    $("roomMeta").textContent = `Level: ${levelVal.toUpperCase()} · Mode: ${modeVal.toUpperCase()}`;
+    let metaText = `Level: ${levelVal.toUpperCase()} · Mode: ${modeVal.toUpperCase()}`;
+    if (r.db_fallback || r.warning) {
+      metaText += " · Local Storage (Fallback)";
+      console.warn("Storage notice:", r.warning || "Database connection unavailable; running in local storage fallback mode.");
+    }
+    $("roomMeta").textContent = metaText;
 
     $("setupScreen").classList.add("hidden");
     $("chatScreen").style.display = "flex";

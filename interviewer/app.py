@@ -336,9 +336,12 @@ async def get_health():
     sweep_sessions()
     db_name = "unknown"
     db_status = "ok"
+    db_fallback = False
     try:
         st = get_store()
         db_name = st.path or st.backend_type
+        db_fallback = getattr(st, "is_fallback", False)
+        db_status = "fallback" if db_fallback else "ok"
     except Exception:
         db_status = "unavailable"
         db_name = "error"
@@ -348,6 +351,7 @@ async def get_health():
         "sessions": len(_SESSIONS),
         "db": db_name,
         "db_status": db_status,
+        "db_fallback": db_fallback,
     }
 
 
@@ -458,13 +462,15 @@ async def start_interview(req: StartSessionRequest):
     try:
         store = get_store()
         iid = store.create_interview(vars(cfg), llm="", session_id=sid)
-    except StoreError as err:
+    except Exception as err:
         sanitized_err = sanitize_secret_text(str(err))
-        _log("db_start_error", session_id=sid, error=sanitized_err)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database service unavailable. Please check database connectivity.",
-        )
+        _log("db_start_fallback_triggered", session_id=sid, error=sanitized_err)
+        store = get_store()
+        if hasattr(store, "_activate_fallback"):
+            store._activate_fallback(reason=sanitized_err)
+        else:
+            store = Store(os.environ.get("INTERVIEW_DB", "interviews.db"))
+        iid = store.create_interview(vars(cfg), llm="", session_id=sid)
 
     # Phase 3: Index Resume & Job Description via RAG Vector Storage
     if cfg.resume_text or cfg.job_description:
@@ -527,7 +533,7 @@ async def start_interview(req: StartSessionRequest):
         store.add_turn(iid, idx, vars(turns[idx]))
         _SESSIONS[sid]["persisted"] += 1
 
-    return {
+    resp_payload = {
         "session_id": sid,
         "interview_id": iid,
         "message": first_message,
@@ -535,6 +541,10 @@ async def start_interview(req: StartSessionRequest):
         "llm": engine.llm.name,
         "proctoring": cfg.proctoring,
     }
+    if getattr(store, "is_fallback", False):
+        resp_payload["db_fallback"] = True
+        resp_payload["warning"] = "Database connection unavailable; running in local storage fallback mode."
+    return resp_payload
 
 
 @app.post("/api/session/resume", tags=["Interview"])

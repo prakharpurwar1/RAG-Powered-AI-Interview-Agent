@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 import urllib.parse
@@ -332,7 +333,7 @@ class SQLiteStoreBackend:
                     """INSERT INTO document_chunks
                        (interview_id, doc_type, section, chunk_index, text, embedding, created_at)
                        VALUES (?,?,?,?,?,?,?)""",
-                    (interview_id, c_dict.get("doc_type"), c_dict.get("section"),
+                    (interview_id, c_dict.get("doc_type") or doc_type, c_dict.get("section") or "general",
                      int(c_dict.get("chunk_index", 0)), str(c_dict.get("text", "")),
                      emb_json, float(c_dict.get("created_at") or time.time())),
                 )
@@ -838,7 +839,7 @@ class PostgresStoreBackend:
                     """INSERT INTO document_chunks
                        (interview_id, doc_type, section, chunk_index, text, embedding, created_at)
                        VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-                    (interview_id, c_dict.get("doc_type"), c_dict.get("section"),
+                    (interview_id, c_dict.get("doc_type") or doc_type, c_dict.get("section") or "general",
                      int(c_dict.get("chunk_index", 0)), str(c_dict.get("text", "")),
                      emb_json, float(c_dict.get("created_at") or time.time())),
                 )
@@ -1049,18 +1050,32 @@ class PostgresStoreBackend:
 
 
 # ===========================================================================
-# Unified Store Interface / Adapter
+# Unified Store Interface / Adapter with Graceful Fallback
 # ===========================================================================
 class Store:
-    """Unified persistence store supporting SQLite and PostgreSQL backends."""
+    """Unified persistence store supporting SQLite and PostgreSQL backends with graceful fallback.
+
+    - Attempts PostgreSQL / Supabase connection when DATABASE_URL is configured.
+    - If PostgreSQL is unavailable (network, authentication, pooler paused, or schema init error),
+      gracefully falls back to local SQLite storage (/tmp/interviews.db, interviews.db, or :memory:).
+    - Preserves all session functionality (interviews, turns, scorecards, integrity, RAG document chunks).
+    - Periodically probes PostgreSQL recovery so persistent storage resumes automatically once restored.
+    """
 
     def __init__(
         self,
         path: Optional[str] = None,
         database_url: Optional[str] = None,
+        allow_fallback: bool = True,
     ):
         self.path = path
         self.database_url = database_url
+        self.allow_fallback = allow_fallback
+        self.is_fallback = False
+        self.fallback_reason: Optional[str] = None
+        self._fallback_backend: Optional[SQLiteStoreBackend] = None
+        self._pg_backend: Optional[PostgresStoreBackend] = None
+        self._last_pg_check = 0.0
 
         db_env = os.environ.get("DATABASE_URL", "").strip()
         has_pg_env = bool(db_env and (db_env.startswith("postgres://") or db_env.startswith("postgresql://")))
@@ -1068,30 +1083,98 @@ class Store:
         # Consistent Selection Rule:
         # 1. Explicit database_url argument takes highest precedence
         if database_url:
-            self._backend = PostgresStoreBackend(database_url)
-            self._backend_type = "postgres"
-            self.path = self.path or "postgresql"
+            self._init_postgres_or_fallback(database_url)
         # 2. Path provided as a PostgreSQL connection URI
         elif path and (path.startswith("postgres://") or path.startswith("postgresql://")):
-            self._backend = PostgresStoreBackend(path)
-            self._backend_type = "postgres"
-            self.path = "postgresql"
+            self._init_postgres_or_fallback(path)
         # 3. Explicit SQLite test/scratch file (e.g. ends with .db/.sqlite or is :memory:)
         #    Preserves test isolation even if DATABASE_URL happens to be in ambient environment
         elif path and (path.endswith(".db") or path.endswith(".sqlite") or path == ":memory:") and path not in ("interviews.db", "/tmp/interviews.db"):
             self._backend = SQLiteStoreBackend(path)
             self._backend_type = "sqlite"
+            self.path = path
         # 4. DATABASE_URL configured in environment (production / serverless)
         elif has_pg_env:
-            self._backend = PostgresStoreBackend(db_env)
-            self._backend_type = "postgres"
-            self.path = self.path or "postgresql"
+            self._init_postgres_or_fallback(db_env)
         # 5. Default: SQLite backend (path or INTERVIEW_DB or interviews.db)
         else:
             sqlite_path = path or os.environ.get("INTERVIEW_DB", "interviews.db")
             self._backend = SQLiteStoreBackend(sqlite_path)
             self._backend_type = "sqlite"
             self.path = sqlite_path
+
+    def _init_postgres_or_fallback(self, url: str):
+        self.database_url = url
+        try:
+            self._pg_backend = PostgresStoreBackend(url)
+            self._backend = self._pg_backend
+            self._backend_type = "postgres"
+            self.path = self.path or "postgresql"
+            self.is_fallback = False
+            self.fallback_reason = None
+            masked_url = sanitize_secret_text(self.database_url)
+            logger.info("Storage backend active: PostgreSQL (%s)", masked_url)
+            sys.stderr.write(f"[Storage] Storage backend active: PostgreSQL ({masked_url})\n")
+        except Exception as exc:
+            if not self.allow_fallback:
+                raise
+            sanitized = sanitize_secret_text(str(exc))
+            self._activate_fallback(reason=sanitized)
+
+    def _activate_fallback(self, fallback_path: Optional[str] = None, reason: str = ""):
+        self.is_fallback = True
+        self.fallback_reason = reason or "PostgreSQL database unavailable"
+        if self._fallback_backend is None:
+            is_serverless = bool(
+                os.environ.get("NETLIFY")
+                or os.environ.get("VERCEL")
+                or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+            )
+            default_db = "/tmp/interviews.db" if is_serverless else "interviews.db"
+            target_path = fallback_path or os.environ.get("INTERVIEW_DB", default_db)
+            try:
+                self._fallback_backend = SQLiteStoreBackend(target_path)
+                self.fallback_path = target_path
+            except Exception as exc:
+                logger.warning("Could not initialize file-based SQLite fallback at %s: %s. Using in-memory store.", target_path, exc)
+                self._fallback_backend = SQLiteStoreBackend(":memory:")
+                self.fallback_path = ":memory:"
+        self._backend = self._fallback_backend
+        self._backend_type = "sqlite"
+        self.path = getattr(self, "fallback_path", "interviews.db")
+        masked_pg = sanitize_secret_text(self.database_url or "postgresql")
+        logger.warning(
+            "Storage backend active: Fallback SQLite (%s). PostgreSQL (%s) unavailable: %s",
+            self.path, masked_pg, self.fallback_reason
+        )
+        sys.stderr.write(
+            f"[Storage Warning] Storage backend active: Fallback SQLite ({self.path}). Reason: {self.fallback_reason}\n"
+        )
+
+    def _maybe_recover_postgres(self):
+        if not self.is_fallback or not self.database_url or not self.allow_fallback:
+            return
+        now = time.time()
+        # Cooldown: probe PostgreSQL at most once every 30 seconds
+        if now - self._last_pg_check < 30.0:
+            return
+        self._last_pg_check = now
+
+        try:
+            candidate = PostgresStoreBackend(self.database_url)
+            with candidate._cursor() as cur:
+                cur.execute("SELECT 1")
+            self._pg_backend = candidate
+            self._backend = candidate
+            self._backend_type = "postgres"
+            self.path = "postgresql"
+            self.is_fallback = False
+            self.fallback_reason = None
+            masked_url = sanitize_secret_text(self.database_url)
+            logger.info("PostgreSQL database connection restored (%s). Resuming PostgreSQL persistence.", masked_url)
+            sys.stderr.write(f"[Storage] PostgreSQL connection restored ({masked_url}). Resuming PostgreSQL persistence.\n")
+        except Exception:
+            pass
 
     @property
     def backend_type(self) -> str:
@@ -1102,32 +1185,105 @@ class Store:
         """Expose raw sqlite connection when using SQLite backend for backward compatibility."""
         if hasattr(self._backend, "_conn"):
             return self._backend._conn
+        if self._fallback_backend and hasattr(self._fallback_backend, "_conn"):
+            return self._fallback_backend._conn
         raise AttributeError("PostgreSQL backend does not expose a raw _conn property.")
 
-    # Public method delegates:
+    # Public method delegates with fallback resilience:
     def create_interview(self, config: dict, llm: str = "", session_id: str = "") -> str:
-        return self._backend.create_interview(config, llm=llm, session_id=session_id)
+        self._maybe_recover_postgres()
+        try:
+            return self._backend.create_interview(config, llm=llm, session_id=session_id)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.create_interview(config, llm=llm, session_id=session_id)
+            raise
 
     def add_turn(self, interview_id, idx, turn: dict):
-        return self._backend.add_turn(interview_id, idx, turn)
+        if self._fallback_backend and self._fallback_backend.get_interview(interview_id):
+            return self._fallback_backend.add_turn(interview_id, idx, turn)
+        self._maybe_recover_postgres()
+        try:
+            return self._backend.add_turn(interview_id, idx, turn)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.add_turn(interview_id, idx, turn)
+            raise
 
     def save_scorecard(self, interview_id, scorecard: dict):
-        return self._backend.save_scorecard(interview_id, scorecard)
+        if self._fallback_backend and self._fallback_backend.get_interview(interview_id):
+            return self._fallback_backend.save_scorecard(interview_id, scorecard)
+        self._maybe_recover_postgres()
+        try:
+            return self._backend.save_scorecard(interview_id, scorecard)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.save_scorecard(interview_id, scorecard)
+            raise
 
     def save_integrity(self, interview_id, summary: dict):
-        return self._backend.save_integrity(interview_id, summary)
+        if self._fallback_backend and self._fallback_backend.get_interview(interview_id):
+            return self._fallback_backend.save_integrity(interview_id, summary)
+        self._maybe_recover_postgres()
+        try:
+            return self._backend.save_integrity(interview_id, summary)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.save_integrity(interview_id, summary)
+            raise
 
     def save_review(self, interview_id, reviewer, notes, human_score, human_recommendation):
-        return self._backend.save_review(interview_id, reviewer, notes, human_score, human_recommendation)
+        if self._fallback_backend and self._fallback_backend.get_interview(interview_id):
+            return self._fallback_backend.save_review(interview_id, reviewer, notes, human_score, human_recommendation)
+        self._maybe_recover_postgres()
+        try:
+            return self._backend.save_review(interview_id, reviewer, notes, human_score, human_recommendation)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.save_review(interview_id, reviewer, notes, human_score, human_recommendation)
+            raise
 
     def save_document_chunks(self, interview_id: str, chunks: list, doc_type: str | None = None):
-        return self._backend.save_document_chunks(interview_id, chunks, doc_type=doc_type)
+        if self._fallback_backend and self._fallback_backend.get_interview(interview_id):
+            return self._fallback_backend.save_document_chunks(interview_id, chunks, doc_type=doc_type)
+        self._maybe_recover_postgres()
+        try:
+            return self._backend.save_document_chunks(interview_id, chunks, doc_type=doc_type)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.save_document_chunks(interview_id, chunks, doc_type=doc_type)
+            raise
 
     def get_document_chunks(self, interview_id: str, doc_type: str | None = None) -> list:
-        return self._backend.get_document_chunks(interview_id, doc_type=doc_type)
+        try:
+            chunks = self._backend.get_document_chunks(interview_id, doc_type=doc_type)
+            if chunks:
+                return chunks
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+            else:
+                raise
+        if self._fallback_backend:
+            return self._fallback_backend.get_document_chunks(interview_id, doc_type=doc_type)
+        return []
 
     def delete_document_chunks(self, interview_id: str, doc_type: str | None = None):
-        return self._backend.delete_document_chunks(interview_id, doc_type=doc_type)
+        if self._fallback_backend and self._fallback_backend.get_interview(interview_id):
+            return self._fallback_backend.delete_document_chunks(interview_id, doc_type=doc_type)
+        try:
+            return self._backend.delete_document_chunks(interview_id, doc_type=doc_type)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.delete_document_chunks(interview_id, doc_type=doc_type)
+            raise
 
     def update_interview_documents(
         self,
@@ -1135,34 +1291,182 @@ class Store:
         resume_text: str | None = None,
         job_description: str | None = None,
     ) -> bool:
-        return self._backend.update_interview_documents(interview_id, resume_text, job_description)
+        if self._fallback_backend and self._fallback_backend.get_interview(interview_id):
+            return self._fallback_backend.update_interview_documents(interview_id, resume_text, job_description)
+        try:
+            return self._backend.update_interview_documents(interview_id, resume_text, job_description)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.update_interview_documents(interview_id, resume_text, job_description)
+            raise
 
     def update_interview_status(self, interview_id: str, status: str) -> bool:
-        return self._backend.update_interview_status(interview_id, status)
+        if self._fallback_backend and self._fallback_backend.get_interview(interview_id):
+            return self._fallback_backend.update_interview_status(interview_id, status)
+        try:
+            return self._backend.update_interview_status(interview_id, status)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.update_interview_status(interview_id, status)
+            raise
 
     def get_interview_by_session_id(self, session_id: str) -> dict | None:
-        return self._backend.get_interview_by_session_id(session_id)
+        try:
+            row = self._backend.get_interview_by_session_id(session_id)
+            if row:
+                return row
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+            else:
+                raise
+        if self._fallback_backend:
+            return self._fallback_backend.get_interview_by_session_id(session_id)
+        return None
 
     def delete_interview(self, interview_id):
-        return self._backend.delete_interview(interview_id)
+        done = False
+        try:
+            done = self._backend.delete_interview(interview_id)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+            else:
+                raise
+        if self._fallback_backend and self._fallback_backend != self._backend:
+            try:
+                done = self._fallback_backend.delete_interview(interview_id) or done
+            except Exception:
+                pass
+        return done
 
     def delete_candidate(self, email):
-        return self._backend.delete_candidate(email)
+        count = 0
+        try:
+            count = self._backend.delete_candidate(email)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+            else:
+                raise
+        if self._fallback_backend and self._fallback_backend != self._backend:
+            try:
+                count += self._fallback_backend.delete_candidate(email)
+            except Exception:
+                pass
+        return count
 
     def purge_expired(self, now=None) -> int:
-        return self._backend.purge_expired(now=now)
+        count = 0
+        try:
+            count = self._backend.purge_expired(now=now)
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.purge_expired(now=now)
+            raise
+        if self._fallback_backend and self._fallback_backend != self._backend:
+            try:
+                count += self._fallback_backend.purge_expired(now=now)
+            except Exception:
+                pass
+        return count
 
     def list_interviews(self, status=None, sort="score") -> list:
-        return self._backend.list_interviews(status=status, sort=sort)
+        results = []
+        seen_ids = set()
+        try:
+            rows = self._backend.list_interviews(status=status, sort=sort)
+            for r in rows:
+                results.append(r)
+                seen_ids.add(r["id"])
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.list_interviews(status=status, sort=sort)
+            raise
+        if self._fallback_backend and self._fallback_backend != self._backend:
+            try:
+                f_rows = self._fallback_backend.list_interviews(status=status, sort=sort)
+                for r in f_rows:
+                    if r["id"] not in seen_ids:
+                        results.append(r)
+                        seen_ids.add(r["id"])
+            except Exception:
+                pass
+        return results
 
     def get_interview(self, interview_id):
-        return self._backend.get_interview(interview_id)
+        try:
+            row = self._backend.get_interview(interview_id)
+            if row:
+                return row
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+            else:
+                raise
+        if self._fallback_backend:
+            return self._fallback_backend.get_interview(interview_id)
+        return None
 
     def export_candidate(self, email) -> list:
-        return self._backend.export_candidate(email)
+        items = []
+        seen_ids = set()
+        try:
+            items = self._backend.export_candidate(email)
+            seen_ids = {i["id"] for i in items if "id" in i}
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                return self._backend.export_candidate(email)
+            raise
+        if self._fallback_backend and self._fallback_backend != self._backend:
+            try:
+                f_items = self._fallback_backend.export_candidate(email)
+                for fi in f_items:
+                    if fi.get("id") not in seen_ids:
+                        items.append(fi)
+            except Exception:
+                pass
+        return items
 
     def stats(self) -> dict:
-        return self._backend.stats()
+        try:
+            s = self._backend.stats()
+            if self.is_fallback:
+                s["storage"] = "sqlite_fallback"
+                s["fallback"] = True
+                s["fallback_reason"] = self.fallback_reason
+            else:
+                s["storage"] = self._backend_type
+                s["fallback"] = False
+            return s
+        except Exception as exc:
+            if self.allow_fallback and self._backend_type == "postgres":
+                self._activate_fallback(reason=sanitize_secret_text(str(exc)))
+                s = self._backend.stats()
+                s["storage"] = "sqlite_fallback"
+                s["fallback"] = True
+                s["fallback_reason"] = self.fallback_reason
+                return s
+            raise
 
     def close(self):
-        return self._backend.close()
+        if self._pg_backend:
+            try:
+                self._pg_backend.close()
+            except Exception:
+                pass
+        if self._fallback_backend:
+            try:
+                self._fallback_backend.close()
+            except Exception:
+                pass
+        if self._backend and self._backend not in (self._pg_backend, self._fallback_backend):
+            try:
+                self._backend.close()
+            except Exception:
+                pass

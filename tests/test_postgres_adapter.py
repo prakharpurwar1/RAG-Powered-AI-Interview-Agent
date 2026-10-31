@@ -812,7 +812,7 @@ def test_database_unavailable_sanitizes_credentials_and_raises_store_error():
 
 
 def test_api_health_when_database_unavailable(monkeypatch):
-    """Verify /api/health gracefully reports db_status: unavailable without throwing HTTP 500."""
+    """Verify /api/health gracefully reports db_status: fallback without throwing HTTP 500."""
     from starlette.testclient import TestClient
     from interviewer.app import app
     import interviewer.app as app_module
@@ -827,11 +827,14 @@ def test_api_health_when_database_unavailable(monkeypatch):
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["db_status"] == "unavailable"
+        assert data["db_status"] in ("fallback", "unavailable")
+        assert data.get("db_fallback") is True
 
 
-def test_api_start_when_database_unavailable(monkeypatch):
-    """Verify /api/start returns HTTP 503 when the database is unavailable."""
+def test_api_start_when_database_unavailable_falls_back_gracefully(monkeypatch):
+    """Verify /api/start falls back to local storage and allows the interview to start
+    without blocking the user when the database is unavailable.
+    """
     from starlette.testclient import TestClient
     from interviewer.app import app
     import interviewer.app as app_module
@@ -848,8 +851,133 @@ def test_api_start_when_database_unavailable(monkeypatch):
             "candidate_name": "Test",
             "mock": True,
         })
-        assert resp.status_code == 503
+        assert resp.status_code == 200
         data = resp.json()
-        assert "Database service unavailable" in data["detail"]
+        assert "session_id" in data
+        assert "interview_id" in data
+        assert "message" in data
+        assert data.get("db_fallback") is True
+
+
+def test_store_graceful_fallback_and_lifecycle():
+    """Verify that Store gracefully falls back to SQLite when PostgreSQL is unavailable,
+    and supports interview creation, turns, scorecards, and RAG document chunks in fallback mode.
+    """
+    fake_url = "postgresql://postgres:pass@unreachable.host.local:5432/postgres"
+    with patch("psycopg2.pool.ThreadedConnectionPool", side_effect=psycopg2.OperationalError("network down")):
+        st = Store(database_url=fake_url, allow_fallback=True)
+        assert st.is_fallback is True
+        assert st.backend_type == "sqlite"
+        assert "network down" in (st.fallback_reason or "")
+
+        # 1. Create interview in fallback
+        iid = st.create_interview({"role": "Dev", "level": "senior"}, session_id="test_sess_fb")
+        assert iid is not None
+
+        # 2. Add turn in fallback
+        st.add_turn(iid, 0, {"role": "assistant", "content": "Welcome!"})
+
+        # 3. Save scorecard in fallback
+        st.save_scorecard(iid, {"overall_score": 88, "recommendation": "hire"})
+
+        # 4. RAG document chunks in fallback
+        st.save_document_chunks(iid, [{"text": "Python experience", "embedding": [0.1, 0.2]}], doc_type="resume")
+        chunks = st.get_document_chunks(iid, doc_type="resume")
+        assert len(chunks) == 1
+        assert chunks[0]["text"] == "Python experience"
+
+        # 5. Retrieve interview
+        row = st.get_interview(iid)
+        assert row is not None
+        assert row["session_id"] == "test_sess_fb"
+        assert row["scorecard"]["overall_score"] == 88
+
+        st.close()
+
+
+def test_store_recovery_when_postgres_reconnects():
+    """Verify that Store automatically recovers to PostgreSQL persistence when
+    database connectivity is restored after a cooldown period.
+    """
+    fake_url = "postgresql://postgres:pass@db.supabase.co:5432/postgres"
+    mock_pool = MagicMock()
+    mock_conn = MagicMock()
+    mock_cur = MagicMock()
+    mock_pool.getconn.return_value = mock_conn
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+
+    # Initial state: PostgreSQL fails -> fallback active
+    with patch("psycopg2.pool.ThreadedConnectionPool", side_effect=psycopg2.OperationalError("initial failure")):
+        st = Store(database_url=fake_url, allow_fallback=True)
+        assert st.is_fallback is True
+
+    # Advance cooldown clock and simulate PostgreSQL recovery
+    st._last_pg_check = 0.0
+    with patch("psycopg2.pool.ThreadedConnectionPool", return_value=mock_pool):
+        st._maybe_recover_postgres()
+        assert st.is_fallback is False
+        assert st.backend_type == "postgres"
+
+    st.close()
+
+
+def test_end_to_end_interview_flow_with_database_fallback(monkeypatch):
+    """End-to-end integration test: verify that a user can start, conduct, and complete
+    an entire interview with responses, RAG retrieval, and scoring even when PostgreSQL is unavailable.
+    """
+    from starlette.testclient import TestClient
+    from interviewer.app import app
+    import interviewer.app as app_module
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://postgres:secret@db.offline.supabase.co:5432/postgres")
+    app_module._STORE = None
+    app_module._STORE_PATH = None
+
+    with patch("psycopg2.pool.ThreadedConnectionPool", side_effect=psycopg2.OperationalError("cluster paused")):
+        client = TestClient(app)
+
+        # 1. Start interview with Resume & Job Description text
+        start_resp = client.post("/api/start", json={
+            "role": "Python Backend Engineer",
+            "level": "mid",
+            "candidate_name": "Grace Hopper",
+            "mock": True,
+            "resume_text": "Experienced in building FastAPI APIs, distributed systems, and PostgreSQL databases.",
+            "job_description": "We need a Python engineer who understands distributed storage and fault tolerance.",
+        })
+        assert start_resp.status_code == 200
+        start_data = start_resp.json()
+        sid = start_data["session_id"]
+        iid = start_data["interview_id"]
+        assert start_data.get("db_fallback") is True
+        assert "message" in start_data
+
+        # 2. Respond to question via /api/message
+        resp1 = client.post("/api/message", json={
+            "session_id": sid,
+            "message": "I design fault-tolerant systems using distributed logging and graceful fallbacks.",
+        })
+        assert resp1.status_code == 200
+        resp1_data = resp1.json()
+        assert "message" in resp1_data
+
+        # 3. Check session resume
+        resume_resp = client.post("/api/session/resume", json={"session_id": sid})
+        assert resume_resp.status_code == 200
+        assert resume_resp.json()["session_id"] == sid
+
+        # 4. Generate report upon interview conclusion
+        report_resp = client.post("/api/report", json={"session_id": sid})
+        assert report_resp.status_code == 200
+        report_data = report_resp.json()
+        assert "scorecard" in report_data
+        assert "weighted_total" in report_data["scorecard"] or "overall_score" in report_data["scorecard"]
+
+        # 5. Verify interview is persisted in store and stats reflect it
+        st = app_module.get_store()
+        stored_row = st.get_interview(iid)
+        assert stored_row is not None
+        assert stored_row["candidate_name"] == "Grace Hopper"
+        assert "weighted_total" in stored_row["scorecard"] or "overall_score" in stored_row["scorecard"]
 
 

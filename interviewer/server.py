@@ -314,10 +314,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             st = _store()
             iid = st.create_interview(vars(cfg), llm="")
-        except StoreError as err:
+        except Exception as err:
             sanitized_err = sanitize_secret_text(str(err))
-            _log("db_start_error", error=sanitized_err)
-            return self._send(503, {"error": "Database service unavailable. Please check database connectivity."})
+            _log("db_start_fallback_triggered", error=sanitized_err)
+            st = _store()
+            if hasattr(st, "_activate_fallback"):
+                st._activate_fallback(reason=sanitized_err)
+            else:
+                st = Store("interviews.db")
+            iid = st.create_interview(vars(cfg), llm="")
 
         # Phase 3: Index Resume & Job Description via RAG Vector Storage
         if cfg.resume_text or cfg.job_description:
