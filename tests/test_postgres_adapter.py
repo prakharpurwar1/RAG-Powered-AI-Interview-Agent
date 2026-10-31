@@ -606,6 +606,58 @@ def test_supabase_url_preserves_explicit_sslmode():
     assert normalized.count("sslmode") == 1
 
 
+def test_supabase_url_normalization_handles_bracketed_pooler_host_and_region():
+    """Regression test: verify Supabase Session Pooler URLs with bracketed host placeholders
+    do not raise ValueError: Invalid IPv6 URL and are cleanly sanitized into valid hostnames.
+    """
+    raw_template = "postgres://postgres.myproject:mypassword@aws-0-[region].pooler.supabase.com:5432/postgres"
+    backend = PostgresStoreBackend.__new__(PostgresStoreBackend)
+    normalized = backend._normalize_url(raw_template)
+
+    assert normalized.startswith("postgresql://")
+    assert "aws-0-region.pooler.supabase.com:5432" in normalized
+    assert "[" not in normalized and "]" not in normalized
+    assert "sslmode=require" in normalized
+    assert "keepalives=1" in normalized
+
+    # Also test specific region pasted with brackets
+    raw_regional = "postgres://postgres.myproject:mypassword@aws-0-[ap-south-1].pooler.supabase.com:5432/postgres"
+    normalized_reg = backend._normalize_url(raw_regional)
+    assert "aws-0-ap-south-1.pooler.supabase.com:5432" in normalized_reg
+    assert "[" not in normalized_reg and "]" not in normalized_reg
+
+
+def test_supabase_url_normalization_handles_bracketed_and_special_char_credentials():
+    """Regression test: verify usernames and passwords with template brackets or special
+    characters (@, #, %) are properly parsed and percent-encoded without crashing.
+    """
+    raw = "postgresql://postgres.[project-ref]:[my@p#ss]@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
+    backend = PostgresStoreBackend.__new__(PostgresStoreBackend)
+    normalized = backend._normalize_url(raw)
+
+    assert normalized.startswith("postgresql://")
+    assert "postgres.project-ref" in normalized
+    assert "%5Bmy%40p%23ss%5D" in normalized
+    assert "aws-0-us-east-1.pooler.supabase.com:5432" in normalized
+    assert "sslmode=require" in normalized
+
+
+def test_supabase_url_normalization_preserves_genuine_ipv6_literal():
+    """Verify genuine RFC 3986 bracketed IPv6 literals (e.g. [::1], [2001:db8::1])
+    retain their brackets while non-IPv6 bracketed hosts have placeholder brackets stripped.
+    """
+    backend = PostgresStoreBackend.__new__(PostgresStoreBackend)
+
+    ipv6_url = "postgresql://user:secret@[::1]:5432/postgres"
+    normalized_ipv6 = backend._normalize_url(ipv6_url)
+    assert "@[::1]:5432" in normalized_ipv6
+
+    ipv6_public = "postgresql://user:secret@[2001:db8::1]:5432/postgres"
+    normalized_pub = backend._normalize_url(ipv6_public)
+    assert "@[2001:db8::1]:5432" in normalized_pub
+    assert "sslmode=require" in normalized_pub
+
+
 def test_postgres_schema_and_migration_idempotent(mock_postgres_backend):
     """Verify _init_schema and _migrate execute schema DDL and idempotent column additions."""
     backend = mock_postgres_backend

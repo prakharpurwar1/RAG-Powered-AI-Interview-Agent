@@ -14,6 +14,7 @@ Compliance helpers (DPDP Act):
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -548,10 +549,10 @@ class PostgresStoreBackend:
                 "Please install it with: pip install psycopg2-binary"
             )
         self.raw_url = database_url
-        self.url = self._normalize_url(database_url)
         self.min_conn = min_conn
         self.max_conn = max_conn
         try:
+            self.url = self._normalize_url(database_url)
             self._pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=self.min_conn,
                 maxconn=self.max_conn,
@@ -566,7 +567,7 @@ class PostgresStoreBackend:
                 if raw_pw and len(raw_pw) >= 3:
                     raw_err = raw_err.replace(raw_pw, "[REDACTED]")
             sanitized_err = sanitize_secret_text(raw_err)
-            masked_url = sanitize_secret_text(self.url)
+            masked_url = sanitize_secret_text(getattr(self, "url", self.raw_url))
             logger.error("Failed to connect to PostgreSQL database (%s): %s", masked_url, sanitized_err)
             raise StoreError(f"Database unavailable: {sanitized_err}") from exc
 
@@ -574,36 +575,112 @@ class PostgresStoreBackend:
         """Normalize PostgreSQL URI for Supabase compatibility.
 
         - Converts 'postgres://' to 'postgresql://'
-        - Percent-encodes special characters in database passwords (e.g. #, %, @)
+        - Safely partitions URI components without relying on urllib.parse.urlsplit
+          (which raises ValueError: Invalid IPv6 URL on bracketed pooler host templates or passwords)
+        - Strips template/placeholder brackets from hostname (e.g. aws-0-[region].pooler.supabase.com)
+          while preserving valid RFC 3986 bracketed IPv6 literals (e.g. [::1])
+        - Percent-encodes special characters in database passwords (e.g. #, %, @, [, ])
         - Enforces 'sslmode=require' for remote cloud instances (Supabase) if absent
         - Configures TCP keepalives to prevent pooler idle timeouts
         """
-        url = url.strip()
+        url = url.strip().strip("'\"")
         if url.startswith("postgres://"):
-            url = "postgresql://" + url[len("postgres://"):]
+            scheme = "postgresql://"
+            rest = url[len("postgres://"):]
+        elif url.startswith("postgresql://"):
+            scheme = "postgresql://"
+            rest = url[len("postgresql://"):]
+        else:
+            return url
 
-        # Safely encode special characters in password without corrupting host or database
-        m = re.match(r"^(postgresql://)([^/@]+):([^@]+)@([^/?#]+)(.*)$", url)
-        if m:
-            scheme, user, password, host_port, rest = m.groups()
+        # Separate query string
+        base, _, query = rest.partition("?")
+
+        # Separate path (database name)
+        auth_part, slash, path = base.partition("/")
+
+        # Separate userinfo from hostport (use rpartition to safely support passwords containing '@')
+        if "@" in auth_part:
+            userinfo, _, hostport = auth_part.rpartition("@")
+            if ":" in userinfo:
+                user, _, password = userinfo.partition(":")
+            else:
+                user, password = userinfo, ""
+        else:
+            user, password = "", ""
+            hostport = auth_part
+
+        # Clean user placeholder brackets if present e.g. postgres.[project-ref] -> postgres.project-ref
+        if user:
+            if "[" in user or "]" in user:
+                user = user.replace("[", "").replace("]", "")
+            user = urllib.parse.quote(urllib.parse.unquote(user), safe=".-_~")
+
+        # Safely quote password
+        if password:
             unquoted_pw = urllib.parse.unquote(password)
-            encoded_pw = urllib.parse.quote(unquoted_pw, safe="")
-            url = f"{scheme}{user}:{encoded_pw}@{host_port}{rest}"
+            password = urllib.parse.quote(unquoted_pw, safe="")
 
-        # Parse query params and enforce sslmode=require and TCP keepalives for remote databases
-        parsed = urllib.parse.urlsplit(url)
-        q = urllib.parse.parse_qs(parsed.query)
-        host = parsed.hostname or ""
-        if host and host not in ("localhost", "127.0.0.1", "::1"):
-            params_to_add = []
+        # Parse and clean host and port
+        if hostport.startswith("["):
+            idx = hostport.rfind("]")
+            if idx != -1:
+                raw_host = hostport[:idx + 1]
+                raw_port = hostport[idx + 1:]
+                port = raw_port[1:] if raw_port.startswith(":") else ""
+            else:
+                raw_host = hostport
+                port = ""
+        elif ":" in hostport:
+            raw_host, _, port = hostport.rpartition(":")
+            if not port.isdigit():
+                raw_host = hostport
+                port = ""
+        else:
+            raw_host = hostport
+            port = ""
+
+        # Clean host: preserve valid IPv6 literals (e.g. [::1]), otherwise strip placeholder brackets
+        clean_host = raw_host
+        if raw_host.startswith("[") and raw_host.endswith("]"):
+            inner = raw_host[1:-1]
+            try:
+                ipaddress.IPv6Address(inner)
+                clean_host = raw_host  # valid IPv6 literal
+            except ValueError:
+                clean_host = inner.replace("[", "").replace("]", "")
+        else:
+            clean_host = raw_host.replace("[", "").replace("]", "")
+
+        # Reconstruct authority
+        user_prefix = ""
+        if user or password:
+            user_prefix = f"{user}:{password}@" if password else f"{user}@"
+        port_suffix = f":{port}" if port else ""
+        authority = f"{user_prefix}{clean_host}{port_suffix}"
+
+        # Parse query parameters safely without urlsplit
+        q = urllib.parse.parse_qs(query) if query else {}
+        params_to_add = []
+
+        # Enforce sslmode=require and keepalives for remote databases
+        is_local = clean_host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]", "")
+        if not is_local:
             if "sslmode" not in q:
                 params_to_add.append("sslmode=require")
-            if "supabase" in host and "keepalives" not in q:
+            if "supabase" in clean_host.lower() and "keepalives" not in q:
                 params_to_add.append("keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5")
-            if params_to_add:
-                delim = "&" if parsed.query else "?"
-                url = f"{url}{delim}{'&'.join(params_to_add)}"
-        return url
+
+        if params_to_add:
+            delim = "&" if query else ""
+            new_query = f"{query}{delim}{'&'.join(params_to_add)}"
+        else:
+            new_query = query
+
+        query_suffix = f"?{new_query}" if new_query else ""
+        path_part = f"/{path}" if slash else ""
+
+        return f"{scheme}{authority}{path_part}{query_suffix}"
 
     @contextmanager
     def _cursor(self, commit: bool = False):
